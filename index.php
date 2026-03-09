@@ -354,6 +354,27 @@ function esc(string $s): string {
     margin-left: 4px;
   }
 
+  .cut-line {
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    height: 28px;
+    background: #fff8f6;
+    border-top: 2px dashed var(--accent);
+    border-bottom: 2px dashed var(--accent);
+  }
+
+  .cut-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: #fff8f6;
+    padding: 0 8px 0 0;
+  }
+
   .error-msg {
     padding: 32px 24px;
     text-align: center;
@@ -446,6 +467,11 @@ function esc(string $s): string {
       <?php elseif (empty($players)): ?>
         <div class="empty">No players found.</div>
       <?php else: ?>
+        <?php
+          $total_qualified = count(array_filter($players, fn($p) => is_numeric($p['event_count'] ?? 0) && $p['event_count'] >= 5));
+          $cut_after = min(32, $total_qualified);
+          $qualified_count = 0;
+        ?>
         <?php foreach ($players as $i => $p):
           $pos      = $p['position'] ?? ($i + 1);
           $name     = $p['name'] ?? 'Unknown';
@@ -455,6 +481,7 @@ function esc(string $s): string {
           $location = implode(', ', array_filter([$city, $state, $country]));
           $points   = $p['wppr_points'] ?? 0;
           $events   = $p['event_count'] ?? '—';
+          $isQualified = is_numeric($events) && $events >= 5;
           $isTop3   = $pos <= 3;
           $medals   = ['🥇','🥈','🥉'];
           $rankClass = match((int)$pos) { 1 => 'r1', 2 => 'r2', 3 => 'r3', default => '' };
@@ -476,11 +503,16 @@ function esc(string $s): string {
           <div class="points"><?= number_format((float)$points, 2) ?></div>
           <div class="events">
             <?= esc((string)$events) ?>
-            <?php if (is_numeric($events) && $events >= 5): ?>
+            <?php if ($isQualified): ?>
               <span class="qualified" title="Qualified">&#10003;</span>
             <?php endif; ?>
           </div>
         </div>
+        <?php if ($isQualified && ++$qualified_count === $cut_after): ?>
+        <div class="cut-line">
+          <span class="cut-label">CUT LINE &mdash; TOP <?= $cut_after ?></span>
+        </div>
+        <?php endif; ?>
         <?php endforeach; ?>
       <?php endif; ?>
     </div>
