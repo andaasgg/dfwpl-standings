@@ -462,24 +462,6 @@ if ($t_count === 1) {
     color: var(--muted);
   }
 
-  .cut-line {
-    display: flex;
-    align-items: center;
-    padding: 0 16px;
-    height: 28px;
-    background: #fff8f6;
-    border-top: 2px dashed var(--accent);
-    border-bottom: 2px dashed var(--accent);
-  }
-
-  .cut-label {
-    font-family: 'DM Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--accent);
-  }
-
   /* ── Empty / error states ── */
   .splash {
     border: 1px solid var(--border);
@@ -672,7 +654,6 @@ if ($t_count === 1) {
         <?php if (empty($players)): ?>
           <div class="empty">No players to display.</div>
         <?php else: ?>
-          <?php $cut_inserted = false; ?>
           <?php foreach ($players as $i => $p):
             $pos      = $p['position'];
             $name     = $p['name'];
@@ -687,11 +668,6 @@ if ($t_count === 1) {
             $rankClass = match($pos) { 1 => 'r1', 2 => 'r2', 3 => 'r3', default => '' };
             $delay    = min($i * 0.025, 0.5);
           ?>
-          <?php if (!$cut_inserted && $pos > 32): $cut_inserted = true; ?>
-            <div class="cut-line">
-              <span class="cut-label">CUT LINE &mdash; TOP 32</span>
-            </div>
-          <?php endif; ?>
           <div class="row <?= $isTop3 ? 'top-3' : '' ?>"
                style="animation-delay:<?= $delay ?>s"
                data-name="<?= esc(strtolower($name)) ?>"
@@ -710,13 +686,6 @@ if ($t_count === 1) {
             <div class="played"><?= $played ?>/<?= $t_count ?></div>
           </div>
           <?php endforeach; ?>
-          <?php if (!$cut_inserted && $player_count <= 32): ?>
-            <!-- All players fit above cut; no cut line needed -->
-          <?php elseif (!$cut_inserted): ?>
-            <div class="cut-line">
-              <span class="cut-label">CUT LINE &mdash; TOP 32</span>
-            </div>
-          <?php endif; ?>
         <?php endif; ?>
       </div>
     </div>
