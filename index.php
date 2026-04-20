@@ -1,5 +1,5 @@
 <?php
-$api_url    = 'https://api.ifpapinball.com/rankings/custom/430?start_pos=1&api_key=55b97a4ccf9b9c4ee2d443b2737574ab';
+$api_url    = 'https://api.ifpapinball.com/rankings/custom/430?start_pos=1&count=250&api_key=55b97a4ccf9b9c4ee2d443b2737574ab';
 $cache_file = sys_get_temp_dir() . '/ifpa_rankings_430.json';
 $cache_ttl  = 3600; // 60 minutes
 
