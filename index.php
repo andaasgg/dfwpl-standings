@@ -1,24 +1,55 @@
 <?php
-$api_url = 'https://api.ifpapinball.com/rankings/custom/430?start_pos=1&count=50&api_key=55b97a4ccf9b9c4ee2d443b2737574ab';
+$api_url    = 'https://api.ifpapinball.com/rankings/custom/430?start_pos=1&count=50&api_key=55b97a4ccf9b9c4ee2d443b2737574ab';
+$cache_file = sys_get_temp_dir() . '/ifpa_rankings_430.json';
+$cache_ttl  = 3600; // 60 minutes
 
-$ch = curl_init($api_url);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-curl_setopt($ch, CURLOPT_HTTPHEADER, ['Accept: application/json']);
-$response = curl_exec($ch);
-$http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
-
-$data = null;
-$error = null;
-
-if ($response === false || $http_code !== 200) {
-    $error = "Could not load rankings (HTTP $http_code).";
-} else {
-    $data = json_decode($response, true);
-    if ($data === null) {
-        $error = 'Invalid response from IFPA API.';
+// Read existing cache
+$cached_data = null;
+$cache_age   = null;
+if (file_exists($cache_file)) {
+    $raw = file_get_contents($cache_file);
+    $obj = $raw ? json_decode($raw, true) : null;
+    if ($obj && isset($obj['timestamp'], $obj['data'])) {
+        $cache_age   = time() - $obj['timestamp'];
+        $cached_data = $obj['data'];
     }
+}
+
+$data       = null;
+$error      = null;
+$from_cache = false;
+
+if ($cached_data === null || $cache_age > $cache_ttl) {
+    // Fetch fresh data from API
+    $ch = curl_init($api_url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Accept: application/json']);
+    $response  = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($response !== false && $http_code === 200) {
+        $fresh = json_decode($response, true);
+        if ($fresh !== null) {
+            $data = $fresh;
+            file_put_contents($cache_file, json_encode(['timestamp' => time(), 'data' => $fresh]));
+        } else {
+            $error = 'Invalid response from IFPA API.';
+        }
+    } else {
+        // API unavailable — fall back to stale cache if we have it
+        if ($cached_data !== null) {
+            $data       = $cached_data;
+            $from_cache = true;
+        } else {
+            $error = "Could not load rankings (HTTP $http_code).";
+        }
+    }
+} else {
+    // Serve from fresh cache
+    $data       = $cached_data;
+    $from_cache = true;
 }
 
 $players = [];
@@ -153,11 +184,22 @@ function esc(string $s): string {
     flex-shrink: 0;
   }
 
+  .live-badge.cached {
+    background: rgba(107, 107, 128, 0.1);
+    border-color: rgba(107, 107, 128, 0.3);
+    color: var(--muted);
+  }
+
   .live-dot {
     width: 6px; height: 6px;
     border-radius: 50%;
     background: var(--accent);
     animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  .live-badge.cached .live-dot {
+    background: var(--muted);
+    animation: none;
   }
 
   @keyframes pulse {
@@ -425,9 +467,15 @@ function esc(string $s): string {
         <div class="title"><?= esc($title) ?></div>
         <div class="subtitle"><?= esc($subtitle) ?></div>
       </div>
-      <div class="live-badge">
+      <?php
+        if ($from_cache && $cache_age !== null) {
+            $age_min = max(1, (int)round($cache_age / 60));
+            $age_str = $age_min < 60 ? "{$age_min}m ago" : round($age_min / 60, 1) . 'h ago';
+        }
+      ?>
+      <div class="live-badge<?= $from_cache ? ' cached' : '' ?>">
         <div class="live-dot"></div>
-        LIVE
+        <?= $from_cache ? 'CACHED &bull; ' . esc($age_str) : 'LIVE' ?>
       </div>
     </div>
   </div>
