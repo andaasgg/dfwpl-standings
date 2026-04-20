@@ -970,8 +970,8 @@ function renderSeriesList() {
         <span class="series-item-meta">${meta}</span>
       </div>
       <div class="series-item-actions">
-        <button class="btn-series-load" onclick="loadSeries(${JSON.stringify(s.ids)}, ${JSON.stringify(s.name)})">LOAD</button>
-        <button class="btn-series-delete" title="Delete" onclick="deleteSeries(${JSON.stringify(s.name)})">&#10005;</button>
+        <button class="btn-series-load" onclick="loadSeries(${escHtml(JSON.stringify(s.ids))}, ${escHtml(JSON.stringify(s.name))})">LOAD</button>
+        <button class="btn-series-delete" title="Delete" onclick="deleteSeries(${escHtml(JSON.stringify(s.name))})">&#10005;</button>
       </div>
     </div>`;
   }).join('');
