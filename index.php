@@ -1,5 +1,5 @@
 <?php
-$api_url    = 'https://api.ifpapinball.com/rankings/custom/430?start_pos=1&count=50&api_key=55b97a4ccf9b9c4ee2d443b2737574ab';
+$api_url    = 'https://api.ifpapinball.com/rankings/custom/430?start_pos=1&api_key=55b97a4ccf9b9c4ee2d443b2737574ab';
 $cache_file = sys_get_temp_dir() . '/ifpa_rankings_430.json';
 $cache_ttl  = 3600; // 60 minutes
 
@@ -516,8 +516,9 @@ function esc(string $s): string {
         <div class="empty">No players found.</div>
       <?php else: ?>
         <?php
+          $cut_max = 32;
           $total_qualified = count(array_filter($players, fn($p) => is_numeric($p['event_count'] ?? 0) && $p['event_count'] >= 5));
-          $cut_after = min(32, $total_qualified);
+          $cut_after = min($cut_max, $total_qualified);
           $qualified_count = 0;
         ?>
         <?php foreach ($players as $i => $p):
@@ -558,7 +559,7 @@ function esc(string $s): string {
         </div>
         <?php if ($isQualified && ++$qualified_count === $cut_after): ?>
         <div class="cut-line">
-          <span class="cut-label">CUT LINE &mdash; TOP <?= $cut_after ?></span>
+          <span class="cut-label">CUT LINE &mdash; TOP <?= $cut_after ?> CURRENTLY QUALIFIED (<?= $cut_max ?> MAX)</span>
         </div>
         <?php endif; ?>
         <?php endforeach; ?>
