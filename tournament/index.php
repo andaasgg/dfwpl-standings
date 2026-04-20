@@ -2,6 +2,49 @@
 $api_key  = '55b97a4ccf9b9c4ee2d443b2737574ab';
 $api_base = 'https://api.ifpapinball.com';
 
+// ── Series API ───────────────────────────────────────────────────────────────
+$series_file = __DIR__ . '/series.json';
+
+function read_series(string $file): array {
+    if (!file_exists($file)) return [];
+    $data = json_decode(file_get_contents($file), true);
+    return is_array($data) ? $data : [];
+}
+
+function write_series(string $file, array $list): void {
+    file_put_contents($file, json_encode(array_values($list), JSON_PRETTY_PRINT));
+}
+
+$action = $_GET['action'] ?? '';
+if ($action) {
+    header('Content-Type: application/json');
+    if ($action === 'list') {
+        echo json_encode(read_series($series_file));
+        exit;
+    }
+    $body = json_decode(file_get_contents('php://input'), true) ?? [];
+    if ($action === 'save' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $name = trim($body['name'] ?? '');
+        $ids  = trim($body['ids']  ?? '');
+        if (!$name || !$ids) { http_response_code(400); echo json_encode(['error' => 'name and ids required']); exit; }
+        $list  = read_series($series_file);
+        $idx   = array_search($name, array_column($list, 'name'));
+        $entry = ['name' => $name, 'ids' => $ids, 'updatedAt' => time()];
+        if ($idx !== false) $list[$idx] = $entry; else $list[] = $entry;
+        write_series($series_file, $list);
+        echo json_encode($entry);
+        exit;
+    }
+    if ($action === 'delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $name = trim($body['name'] ?? '');
+        $list = array_filter(read_series($series_file), fn($s) => $s['name'] !== $name);
+        write_series($series_file, $list);
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+    http_response_code(400); echo json_encode(['error' => 'unknown action']); exit;
+}
+
 // ── Parse query string ─────────────────────────────────────────────────────
 $ids_raw  = trim($_GET['ids']  ?? '');
 $name_raw = trim($_GET['name'] ?? '');
@@ -895,35 +938,30 @@ function filterRows() {
   }
 }
 
-// ── Series storage ───────────────────────────────────────────────────────────
-const STORAGE_KEY = 'ifpa_series_v1';
-
-function getSeries() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-  catch { return []; }
-}
-
-function putSeries(list) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-}
+// ── Series ───────────────────────────────────────────────────────────────────
+let seriesList = [];
+let seriesOpen = true;
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Series UI ────────────────────────────────────────────────────────────────
-let seriesOpen = true;
+async function fetchSeriesList() {
+  try {
+    const res = await fetch('?action=list');
+    seriesList = res.ok ? await res.json() : [];
+  } catch { seriesList = []; }
+}
 
 function renderSeriesList() {
-  const list    = getSeries();
-  const panel   = document.getElementById('series-panel');
-  const listEl  = document.getElementById('series-list');
-  const badge   = document.getElementById('series-count-badge');
+  const panel  = document.getElementById('series-panel');
+  const listEl = document.getElementById('series-list');
+  const badge  = document.getElementById('series-count-badge');
 
-  badge.textContent = list.length;
-  panel.style.display = list.length ? '' : 'none';
+  badge.textContent = seriesList.length;
+  panel.style.display = seriesList.length ? '' : 'none';
 
-  listEl.innerHTML = list.map(s => {
+  listEl.innerHTML = seriesList.map(s => {
     const idCount = s.ids.split(',').filter(x => x.trim()).length;
     const meta    = `${idCount} tournament${idCount !== 1 ? 's' : ''} &bull; IDs: ${escHtml(s.ids)}`;
     return `<div class="series-item">
@@ -947,22 +985,19 @@ function toggleSeriesList() {
   document.getElementById('series-chevron').textContent = seriesOpen ? '▲' : '▼';
 }
 
-// ── Save / load / delete ─────────────────────────────────────────────────────
-function saveSeries() {
+async function saveSeries() {
   const name = document.getElementById('series-name-input').value.trim();
   const ids  = document.getElementById('ids-input').value.trim();
   if (!ids)  { alert('Enter tournament IDs first.'); return; }
   if (!name) { alert('Enter a series name to save.'); return; }
 
-  const list     = getSeries();
-  const idx      = list.findIndex(s => s.name.toLowerCase() === name.toLowerCase());
-  const entry    = { name, ids, updatedAt: Date.now() };
-  const isUpdate = idx >= 0;
-
-  if (isUpdate) list[idx] = entry;
-  else list.push(entry);
-
-  putSeries(list);
+  const isUpdate = seriesList.some(s => s.name.toLowerCase() === name.toLowerCase());
+  await fetch('?action=save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, ids }),
+  });
+  await fetchSeriesList();
   renderSeriesList();
 
   const btn = document.getElementById('save-btn');
@@ -970,26 +1005,31 @@ function saveSeries() {
   setTimeout(() => updateSaveBtn(), 1500);
 }
 
-function deleteSeries(name) {
-  putSeries(getSeries().filter(s => s.name !== name));
+async function deleteSeries(name) {
+  await fetch('?action=delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  await fetchSeriesList();
   renderSeriesList();
 }
 
 function loadSeries(ids, name) {
-  const params = new URLSearchParams({ ids, name });
-  window.location.href = '?' + params.toString();
+  window.location.href = '?' + new URLSearchParams({ ids, name }).toString();
 }
 
 function updateSaveBtn() {
   const name   = (document.getElementById('series-name-input').value || '').trim().toLowerCase();
   const btn    = document.getElementById('save-btn');
-  const exists = name && getSeries().some(s => s.name.toLowerCase() === name);
+  const exists = name && seriesList.some(s => s.name.toLowerCase() === name);
   btn.textContent = exists ? 'UPDATE' : 'SAVE';
   btn.classList.toggle('update', !!exists);
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await fetchSeriesList();
   renderSeriesList();
   document.getElementById('series-name-input').addEventListener('input', updateSaveBtn);
 });
