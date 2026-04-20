@@ -2,8 +2,9 @@
 $api_key  = '55b97a4ccf9b9c4ee2d443b2737574ab';
 $api_base = 'https://api.ifpapinball.com';
 
-// ── Parse tournament IDs from query string ──────────────────────────────────
-$ids_raw = trim($_GET['ids'] ?? '');
+// ── Parse query string ─────────────────────────────────────────────────────
+$ids_raw  = trim($_GET['ids']  ?? '');
+$name_raw = trim($_GET['name'] ?? '');
 $tournament_ids = [];
 if ($ids_raw) {
     foreach (array_map('trim', explode(',', $ids_raw)) as $id) {
@@ -38,7 +39,7 @@ $errors       = [];
 $has_results  = false;
 
 foreach ($tournament_ids as $tid) {
-    $url  = "$api_base/tournament/$tid/results?api_key=$api_key";
+    $url  = "$api_base/tournament/$tid/results?api_key=$api_key&count=250";
     $data = fetch_tournament($url);
 
     if ($data === null) {
@@ -106,13 +107,13 @@ $player_count     = count($players);
 
 // Page title
 if ($t_count === 1) {
-    $page_title = $tournaments[0]['name'];
+    $page_title = $name_raw ?: $tournaments[0]['name'];
     $subtitle   = number_format($player_count) . ' player' . ($player_count !== 1 ? 's' : '');
 } elseif ($t_count > 1) {
-    $page_title = "$t_count Tournament Series";
+    $page_title = $name_raw ?: "$t_count Tournament Series";
     $subtitle   = number_format($player_count) . ' players across ' . $t_count . ' tournaments';
 } else {
-    $page_title = 'Tournament Report';
+    $page_title = $name_raw ?: 'Tournament Report';
     $subtitle   = '';
 }
 ?>
@@ -270,6 +271,12 @@ if ($t_count === 1) {
     background: var(--surface2);
     padding: 14px 16px;
     display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .id-row, .name-row {
+    display: flex;
     gap: 8px;
     align-items: center;
   }
@@ -290,6 +297,22 @@ if ($t_count === 1) {
   .id-input:focus { border-color: var(--accent); }
   .id-input::placeholder { color: var(--muted); font-family: 'DM Sans', sans-serif; }
 
+  .name-input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    padding: 8px 14px;
+    outline: none;
+    transition: border-color 0.15s;
+    min-width: 0;
+  }
+  .name-input:focus { border-color: var(--accent); }
+  .name-input::placeholder { color: var(--muted); }
+
   .id-submit {
     background: var(--accent);
     border: none;
@@ -305,6 +328,127 @@ if ($t_count === 1) {
     flex-shrink: 0;
   }
   .id-submit:hover { opacity: 0.85; }
+
+  .btn-save {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    padding: 9px 18px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    flex-shrink: 0;
+  }
+  .btn-save:hover { border-color: var(--green); color: var(--green); }
+  .btn-save.update { background: rgba(42,122,82,0.08); border-color: var(--green); color: var(--green); }
+
+  /* ── Saved series panel ── */
+  .series-panel {
+    border: 1px solid var(--border);
+    border-top: none;
+    border-bottom: none;
+    background: var(--surface);
+  }
+
+  .series-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 16px;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+  }
+  .series-panel-header:hover { background: var(--surface2); }
+
+  .series-panel-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .series-count-badge {
+    background: var(--accent);
+    color: #fff;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+    line-height: 1.6;
+  }
+
+  .series-chevron { font-size: 9px; color: var(--muted); }
+
+  .series-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    transition: background 0.12s;
+  }
+  .series-item:last-child { border-bottom: none; }
+  .series-item:hover { background: var(--surface2); }
+
+  .series-item-info { min-width: 0; flex: 1; }
+
+  .series-item-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .series-item-meta {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+  }
+
+  .series-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .btn-series-load {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    padding: 5px 10px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn-series-load:hover { border-color: var(--accent); color: var(--accent); }
+
+  .btn-series-delete {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 12px;
+    padding: 5px 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn-series-delete:hover { border-color: var(--accent); color: var(--accent); }
 
   /* ── Stats bar ── */
   .stats-bar {
@@ -576,18 +720,46 @@ if ($t_count === 1) {
     <?php endif; ?>
   </div>
 
+  <!-- Saved series panel (populated by JS) -->
+  <div class="series-panel" id="series-panel" style="display:none">
+    <div class="series-panel-header" onclick="toggleSeriesList()">
+      <span class="series-panel-label">
+        Saved Series
+        <span class="series-count-badge" id="series-count-badge">0</span>
+      </span>
+      <span class="series-chevron" id="series-chevron">▼</span>
+    </div>
+    <div id="series-list"></div>
+  </div>
+
   <!-- ID input form -->
   <form class="id-form" method="get" action="">
-    <input
-      class="id-input"
-      type="text"
-      name="ids"
-      value="<?= esc($ids_raw) ?>"
-      placeholder="Tournament IDs — comma-separated, e.g. 12345, 67890"
-      autocomplete="off"
-      spellcheck="false"
-    >
-    <button class="id-submit" type="submit">LOAD</button>
+    <div class="id-row">
+      <input
+        class="id-input"
+        type="text"
+        name="ids"
+        id="ids-input"
+        value="<?= esc($ids_raw) ?>"
+        placeholder="Tournament IDs — comma-separated, e.g. 12345, 67890"
+        autocomplete="off"
+        spellcheck="false"
+      >
+      <button class="id-submit" type="submit">LOAD</button>
+    </div>
+    <div class="name-row">
+      <input
+        class="name-input"
+        type="text"
+        name="name"
+        id="series-name-input"
+        value="<?= esc($name_raw) ?>"
+        placeholder="Series name (optional — required to save)"
+        autocomplete="off"
+        spellcheck="false"
+      >
+      <button class="btn-save" type="button" id="save-btn" onclick="saveSeries()">SAVE</button>
+    </div>
   </form>
 
   <?php if (!empty($errors)): ?>
@@ -703,11 +875,12 @@ if ($t_count === 1) {
 </div><!-- /.embed -->
 
 <script>
+// ── Search ───────────────────────────────────────────────────────────────────
 const rows  = Array.from(document.querySelectorAll('#table-body .row'));
 const total = rows.length;
 
 function filterRows() {
-  const q = document.getElementById('search').value.toLowerCase().trim();
+  const q = document.getElementById('search') ? document.getElementById('search').value.toLowerCase().trim() : '';
   let visible = 0;
   rows.forEach(row => {
     const show = !q || row.dataset.name.includes(q) || row.dataset.loc.includes(q);
@@ -721,6 +894,105 @@ function filterRows() {
       : `${total} player${total !== 1 ? 's' : ''}`;
   }
 }
+
+// ── Series storage ───────────────────────────────────────────────────────────
+const STORAGE_KEY = 'ifpa_series_v1';
+
+function getSeries() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function putSeries(list) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Series UI ────────────────────────────────────────────────────────────────
+let seriesOpen = true;
+
+function renderSeriesList() {
+  const list    = getSeries();
+  const panel   = document.getElementById('series-panel');
+  const listEl  = document.getElementById('series-list');
+  const badge   = document.getElementById('series-count-badge');
+
+  badge.textContent = list.length;
+  panel.style.display = list.length ? '' : 'none';
+
+  listEl.innerHTML = list.map(s => {
+    const idCount = s.ids.split(',').filter(x => x.trim()).length;
+    const meta    = `${idCount} tournament${idCount !== 1 ? 's' : ''} &bull; IDs: ${escHtml(s.ids)}`;
+    return `<div class="series-item">
+      <div class="series-item-info">
+        <span class="series-item-name">${escHtml(s.name)}</span>
+        <span class="series-item-meta">${meta}</span>
+      </div>
+      <div class="series-item-actions">
+        <button class="btn-series-load" onclick="loadSeries(${JSON.stringify(s.ids)}, ${JSON.stringify(s.name)})">LOAD</button>
+        <button class="btn-series-delete" title="Delete" onclick="deleteSeries(${JSON.stringify(s.name)})">&#10005;</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  updateSaveBtn();
+}
+
+function toggleSeriesList() {
+  seriesOpen = !seriesOpen;
+  document.getElementById('series-list').style.display  = seriesOpen ? '' : 'none';
+  document.getElementById('series-chevron').textContent = seriesOpen ? '▲' : '▼';
+}
+
+// ── Save / load / delete ─────────────────────────────────────────────────────
+function saveSeries() {
+  const name = document.getElementById('series-name-input').value.trim();
+  const ids  = document.getElementById('ids-input').value.trim();
+  if (!ids)  { alert('Enter tournament IDs first.'); return; }
+  if (!name) { alert('Enter a series name to save.'); return; }
+
+  const list     = getSeries();
+  const idx      = list.findIndex(s => s.name.toLowerCase() === name.toLowerCase());
+  const entry    = { name, ids, updatedAt: Date.now() };
+  const isUpdate = idx >= 0;
+
+  if (isUpdate) list[idx] = entry;
+  else list.push(entry);
+
+  putSeries(list);
+  renderSeriesList();
+
+  const btn = document.getElementById('save-btn');
+  btn.textContent = isUpdate ? 'UPDATED!' : 'SAVED!';
+  setTimeout(() => updateSaveBtn(), 1500);
+}
+
+function deleteSeries(name) {
+  putSeries(getSeries().filter(s => s.name !== name));
+  renderSeriesList();
+}
+
+function loadSeries(ids, name) {
+  const params = new URLSearchParams({ ids, name });
+  window.location.href = '?' + params.toString();
+}
+
+function updateSaveBtn() {
+  const name   = (document.getElementById('series-name-input').value || '').trim().toLowerCase();
+  const btn    = document.getElementById('save-btn');
+  const exists = name && getSeries().some(s => s.name.toLowerCase() === name);
+  btn.textContent = exists ? 'UPDATE' : 'SAVE';
+  btn.classList.toggle('update', !!exists);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderSeriesList();
+  document.getElementById('series-name-input').addEventListener('input', updateSaveBtn);
+});
 </script>
 </body>
 </html>
