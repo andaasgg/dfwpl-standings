@@ -76,10 +76,12 @@ function esc(string $s): string {
 }
 
 // ── Fetch & aggregate ───────────────────────────────────────────────────────
-$player_map   = [];
-$tournaments  = [];
-$errors       = [];
-$has_results  = false;
+$player_map               = [];
+$tournaments              = [];
+$errors                   = [];
+$has_results              = false;
+$tournament_max_points    = [];
+$player_tournament_points = [];
 
 foreach ($tournament_ids as $tid) {
     $url  = "$api_base/tournament/$tid/results?api_key=$api_key&count=250";
@@ -96,6 +98,12 @@ foreach ($tournament_ids as $tid) {
     $tournaments[] = ['id' => $tid, 'name' => $t_name, 'date' => $t_date];
 
     $results = $data['tournament_results'] ?? $data['results'] ?? [];
+    $max_pts_this_t = 0;
+    foreach ($results as $r) {
+        $pts = (float)($r['wppr_points'] ?? $r['points'] ?? 0);
+        if ($pts > $max_pts_this_t) $max_pts_this_t = $pts;
+    }
+    $tournament_max_points[$tid] = $max_pts_this_t;
     foreach ($results as $r) {
         $player_id = $r['player_id'] ?? null;
         $first     = $r['first_name'] ?? '';
@@ -122,6 +130,7 @@ foreach ($tournament_ids as $tid) {
 
         $player_map[$key]['total_points']     += $points;
         $player_map[$key]['tournament_count'] += 1;
+        $player_tournament_points[$key][$tid]  = $points;
 
         // Fill in location if previously empty
         if (!$player_map[$key]['city'] && $city) {
@@ -134,7 +143,26 @@ foreach ($tournament_ids as $tid) {
     if (!empty($results)) $has_results = true;
 }
 
-// ── Sort and rank ───────────────────────────────────────────────────────────
+// ── Racing series points ────────────────────────────────────────────────────
+foreach ($player_map as $key => &$p) {
+    $racing = 0;
+    foreach ($player_tournament_points[$key] ?? [] as $tid => $pts) {
+        $max = $tournament_max_points[$tid] ?? 0;
+        if ($max > 0) {
+            $racing += (int)round(($pts / $max) * 15);
+        }
+    }
+    $p['total_racing_pts'] = $racing;
+}
+unset($p);
+
+$racing_keys = array_keys($player_map);
+usort($racing_keys, fn($a, $b) => $player_map[$b]['total_racing_pts'] <=> $player_map[$a]['total_racing_pts']);
+foreach ($racing_keys as $i => $k) {
+    $player_map[$k]['racing_position'] = $i + 1;
+}
+
+// ── Sort and rank (WPPR) ────────────────────────────────────────────────────
 $players = array_values($player_map);
 usort($players, fn($a, $b) => $b['total_points'] <=> $a['total_points']);
 foreach ($players as $i => &$p) {
@@ -561,7 +589,7 @@ if ($t_count === 1) {
 
   .table-head {
     display: grid;
-    grid-template-columns: 52px 1fr 110px 90px;
+    grid-template-columns: 52px 1fr 92px 86px 72px;
     padding: 8px 16px;
     background: var(--surface2);
     border-bottom: 1px solid var(--border);
@@ -575,10 +603,14 @@ if ($t_count === 1) {
     color: var(--muted);
   }
   .th.right { text-align: right; }
+  .th.sortable { cursor: pointer; user-select: none; transition: color 0.15s; }
+  .th.sortable:hover { color: var(--text); }
+  .th.sortable.active { color: var(--text); }
+  .sort-ind { margin-left: 2px; font-size: 8px; opacity: 0.8; }
 
   .row {
     display: grid;
-    grid-template-columns: 52px 1fr 110px 90px;
+    grid-template-columns: 52px 1fr 92px 86px 72px;
     align-items: center;
     padding: 0 16px;
     height: 52px;
@@ -640,6 +672,14 @@ if ($t_count === 1) {
     font-size: 13px;
     font-weight: 500;
     color: var(--gold);
+  }
+
+  .racing-pts {
+    text-align: right;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--green);
   }
 
   .played {
@@ -862,7 +902,8 @@ if ($t_count === 1) {
       <div class="table-head">
         <div class="th">Rank</div>
         <div class="th">Player</div>
-        <div class="th right">Points</div>
+        <div class="th right sortable active" data-sort="wppr" onclick="sortTable('wppr')">WPPR<span class="sort-ind" id="sort-wppr">▼</span></div>
+        <div class="th right sortable" data-sort="racing" onclick="sortTable('racing')">Racing<span class="sort-ind" id="sort-racing"></span></div>
         <div class="th right">Played</div>
       </div>
       <div class="table-body" id="table-body">
@@ -870,23 +911,26 @@ if ($t_count === 1) {
           <div class="empty">No players to display.</div>
         <?php else: ?>
           <?php foreach ($players as $i => $p):
-            $pos      = $p['position'];
-            $name     = $p['name'];
-            $city     = $p['city']         ?? '';
-            $state    = $p['stateprov']    ?? '';
-            $country  = $p['country_code'] ?? '';
-            $location = implode(', ', array_filter([$city, $state, $country]));
-            $points   = $p['total_points'];
-            $played   = $p['tournament_count'];
-            $isTop3   = $pos <= 3;
-            $medals   = ['🥇','🥈','🥉'];
-            $rankClass = match($pos) { 1 => 'r1', 2 => 'r2', 3 => 'r3', default => '' };
-            $delay    = min($i * 0.025, 0.5);
+            $pos        = $p['position'];
+            $name       = $p['name'];
+            $city       = $p['city']         ?? '';
+            $state      = $p['stateprov']    ?? '';
+            $country    = $p['country_code'] ?? '';
+            $location   = implode(', ', array_filter([$city, $state, $country]));
+            $points     = $p['total_points'];
+            $played     = $p['tournament_count'];
+            $racing_pts = $p['total_racing_pts'];
+            $isTop3     = $pos <= 3;
+            $medals     = ['🥇','🥈','🥉'];
+            $rankClass  = match($pos) { 1 => 'r1', 2 => 'r2', 3 => 'r3', default => '' };
+            $delay      = min($i * 0.025, 0.5);
           ?>
           <div class="row <?= $isTop3 ? 'top-3' : '' ?>"
                style="animation-delay:<?= $delay ?>s"
                data-name="<?= esc(strtolower($name)) ?>"
-               data-loc="<?= esc(strtolower($location)) ?>">
+               data-loc="<?= esc(strtolower($location)) ?>"
+               data-wppr="<?= $points ?>"
+               data-racing="<?= $racing_pts ?>">
             <div class="rank">
               <span class="rank-num <?= $rankClass ?>"><?= $pos ?></span>
               <?php if ($isTop3): ?><span class="medal"><?= $medals[$pos - 1] ?></span><?php endif; ?>
@@ -898,6 +942,7 @@ if ($t_count === 1) {
               <?php endif; ?>
             </div>
             <div class="points"><?= number_format($points, 2) ?></div>
+            <div class="racing-pts"><?= $racing_pts ?></div>
             <div class="played"><?= $played ?>/<?= $t_count ?></div>
           </div>
           <?php endforeach; ?>
@@ -918,6 +963,55 @@ if ($t_count === 1) {
 </div><!-- /.embed -->
 
 <script>
+// ── Sort ─────────────────────────────────────────────────────────────────────
+let currentSort = 'wppr';
+
+function sortTable(col) {
+  currentSort = col;
+
+  document.querySelectorAll('.th.sortable').forEach(th => {
+    const active = th.dataset.sort === col;
+    th.classList.toggle('active', active);
+    const ind = th.querySelector('.sort-ind');
+    if (ind) ind.textContent = active ? '▼' : '';
+  });
+
+  const tbody = document.getElementById('table-body');
+  if (!tbody) return;
+  const allRows = Array.from(tbody.querySelectorAll('.row'));
+
+  allRows.sort((a, b) => {
+    const av = parseFloat(a.dataset[col]) || 0;
+    const bv = parseFloat(b.dataset[col]) || 0;
+    if (bv !== av) return bv - av;
+    const alt = col === 'wppr' ? 'racing' : 'wppr';
+    return (parseFloat(b.dataset[alt]) || 0) - (parseFloat(a.dataset[alt]) || 0);
+  });
+
+  const medals = ['🥇','🥈','🥉'];
+  allRows.forEach((row, i) => {
+    const pos = i + 1;
+    const rankEl = row.querySelector('.rank-num');
+    rankEl.textContent = pos;
+    rankEl.className = 'rank-num' + (pos <= 3 ? ` r${pos}` : '');
+    row.classList.toggle('top-3', pos <= 3);
+    let medalEl = row.querySelector('.medal');
+    if (pos <= 3) {
+      if (!medalEl) {
+        medalEl = document.createElement('span');
+        medalEl.className = 'medal';
+        row.querySelector('.rank').appendChild(medalEl);
+      }
+      medalEl.textContent = medals[pos - 1];
+    } else if (medalEl) {
+      medalEl.remove();
+    }
+    tbody.appendChild(row);
+  });
+
+  filterRows();
+}
+
 // ── Search ───────────────────────────────────────────────────────────────────
 const rows  = Array.from(document.querySelectorAll('#table-body .row'));
 const total = rows.length;
