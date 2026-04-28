@@ -903,7 +903,7 @@ if ($t_count === 1) {
         <div class="th">Rank</div>
         <div class="th">Player</div>
         <div class="th right sortable active" data-sort="wppr" onclick="sortTable('wppr')">WPPR<span class="sort-ind" id="sort-wppr">▼</span></div>
-        <div class="th right sortable" data-sort="racing" onclick="sortTable('racing')">Racing<span class="sort-ind" id="sort-racing"></span></div>
+        <div class="th right sortable" data-sort="racing" onclick="sortTable('racing')">GP<span class="sort-ind" id="sort-racing"></span></div>
         <div class="th right">Played</div>
       </div>
       <div class="table-body" id="table-body">
