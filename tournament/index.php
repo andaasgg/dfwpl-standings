@@ -617,7 +617,7 @@ if ($t_count === 1) {
     top: calc(100% + 6px);
     right: 0;
     width: 200px;
-    background: var(--card);
+    background: var(--surface2);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 7px 10px;
@@ -1082,7 +1082,7 @@ function renderSeriesList() {
 
   listEl.innerHTML = seriesList.map(s => {
     const idCount = s.ids.split(',').filter(x => x.trim()).length;
-    const meta    = `${idCount} tournament${idCount !== 1 ? 's' : ''} &bull; IDs: ${escHtml(s.ids)}`;
+    const meta    = `${idCount} tournament${idCount !== 1 ? 's' : ''}`;
     return `<div class="series-item">
       <div class="series-item-info">
         <span class="series-item-name">${escHtml(s.name)}</span>
