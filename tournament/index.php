@@ -608,6 +608,31 @@ if ($t_count === 1) {
   .th.sortable.active { color: var(--text); }
   .sort-ind { margin-left: 2px; font-size: 8px; opacity: 0.8; }
 
+  .has-tooltip { position: relative; }
+  .has-tooltip .tooltip-text {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 200px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 11px;
+    font-family: 'DM Sans', sans-serif;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text);
+    line-height: 1.45;
+    white-space: normal;
+    z-index: 10;
+    transition: opacity 0.15s;
+  }
+  .has-tooltip:hover .tooltip-text { visibility: visible; opacity: 1; }
+
   .row {
     display: grid;
     grid-template-columns: 52px 1fr 92px 86px 72px;
@@ -903,7 +928,7 @@ if ($t_count === 1) {
         <div class="th">Rank</div>
         <div class="th">Player</div>
         <div class="th right sortable active" data-sort="wppr" onclick="sortTable('wppr')">WPPR<span class="sort-ind" id="sort-wppr">▼</span></div>
-        <div class="th right sortable" data-sort="racing" onclick="sortTable('racing')">GP<span class="sort-ind" id="sort-racing"></span></div>
+        <div class="th right sortable has-tooltip" data-sort="racing" onclick="sortTable('racing')">GP<span class="sort-ind" id="sort-racing"></span><span class="tooltip-text">Each tournament awards up to 15 pts based on your finish relative to the winner. Scores are summed across all tournaments in the series.</span></div>
         <div class="th right">Played</div>
       </div>
       <div class="table-body" id="table-body">
