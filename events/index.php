@@ -377,14 +377,17 @@ if (file_exists($cache_file)) {
   }
   .reg-link.secondary:hover { border-color: var(--accent); color: var(--accent); }
 
-  .details-toggle {
-    margin-top: 10px; font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--muted); background: none; border: none;
+  .details-wrap { margin-top: 10px; }
+  .details-wrap summary {
+    font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
     cursor: pointer; padding: 4px 0; display: flex; align-items: center; gap: 5px;
+    list-style: none; /* remove default marker so our own caret icon is the only one */
   }
-  .details-toggle:hover { color: var(--accent); }
-  .details-toggle .car { transition: transform 0.15s; font-size: 9px; }
-  .details-toggle[aria-expanded="true"] .car { transform: rotate(90deg); }
+  .details-wrap summary::-webkit-details-marker { display: none; } /* same, for Safari */
+  .details-wrap summary:hover { color: var(--accent); }
+  .details-wrap summary .car { transition: transform 0.15s; font-size: 9px; }
+  .details-wrap[open] summary .car { transform: rotate(90deg); }
 
   .details-body {
     margin-top: 8px; padding: 12px; background: var(--surface2); border: 1px solid var(--border);
@@ -392,7 +395,6 @@ if (file_exists($cache_file)) {
     white-space: pre-line;
   }
   .details-body a { color: var(--accent); }
-  .details-body[hidden] { display: none; }
 
   .empty, .error-msg { padding: 32px 24px; text-align: center; color: var(--muted); font-size: 13px;
     border: 1px solid var(--border); border-top: none; }
@@ -494,10 +496,10 @@ if (file_exists($cache_file)) {
         </div>
 
         <?php if (trim($e['description'])): ?>
-        <button class="details-toggle" aria-expanded="false" onclick="toggleDetails(this)">
-          <span class="car">&#9656;</span> Full details
-        </button>
-        <div class="details-body" hidden><?= esc_linkify($e['description']) ?></div>
+        <details class="details-wrap">
+          <summary><span class="car">&#9656;</span> Full details</summary>
+          <div class="details-body"><?= esc_linkify($e['description']) ?></div>
+        </details>
         <?php endif; ?>
       </div>
     </div>
@@ -510,14 +512,5 @@ if (file_exists($cache_file)) {
     Something missing? Check the <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">full site</a>.
   </div>
 </div>
-
-<script>
-function toggleDetails(btn) {
-  const body = btn.nextElementSibling;
-  const open = btn.getAttribute('aria-expanded') === 'true';
-  btn.setAttribute('aria-expanded', String(!open));
-  body.hidden = open;
-}
-</script>
 </body>
 </html>
