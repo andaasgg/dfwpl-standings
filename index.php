@@ -571,6 +571,7 @@ function esc(string $s): string {
     <span class="footer-left" id="footer-count">
       <?= isset($total) ? $total : count($players) ?> player<?= (isset($total) ? $total : count($players)) !== 1 ? 's' : '' ?>
     </span>
+    <a class="ifpa-link" href="events/">Upcoming Events &rarr;</a>
     <a class="ifpa-link" href="https://www.ifpapinball.com" target="_blank">Powered by IFPA &#8599;</a>
   </div>
 </div>
