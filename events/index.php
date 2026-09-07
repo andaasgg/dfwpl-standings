@@ -17,6 +17,11 @@ $ics_url    = 'https://calendar.google.com/calendar/ical/1dc4993689322ae4fa6b280
 $cache_file = sys_get_temp_dir() . '/dfwpl_events.ics.json';
 $cache_ttl  = 1800; // 30 minutes
 
+// IFPA tournament pages fill in confirmed venue address + day-of schedule as the date nears —
+// often before the calendar entry itself gets updated. Same API key used by tournament/index.php.
+$ifpa_api_key    = '55b97a4ccf9b9c4ee2d443b2737574ab';
+$ifpa_cache_file = sys_get_temp_dir() . '/dfwpl_events.ifpa.json';
+
 $site_url = 'https://sites.google.com/view/dfwpinballleague/';
 $cal_url  = 'https://calendar.google.com/calendar/embed?src=1dc4993689322ae4fa6b280c904495bab049f75f2a41475cf4091cc7b01fb2c5%40group.calendar.google.com&ctz=America%2FChicago';
 
@@ -205,6 +210,104 @@ function reg_sentence(string $desc): ?string {
     return null;
 }
 
+// ── IFPA tournament-page enrichment ─────────────────────────────────────
+// Pulls confirmed venue address + doors/start times from the linked IFPA
+// tournament page's own API record, once the organizer has created one.
+// Best-effort only: any failure just means we fall back to calendar data.
+
+/** Pull an IFPA tournament id out of an event's extracted links, if one exists. */
+function extract_ifpa_id(array $urls): ?string {
+    foreach ($urls as $u) {
+        if (strpos(strtolower(parse_url($u, PHP_URL_HOST) ?: ''), 'ifpapinball') === false) continue;
+        parse_str((string) parse_url($u, PHP_URL_QUERY), $q);
+        if (!empty($q['t']) && ctype_digit($q['t'])) return $q['t'];
+    }
+    return null;
+}
+
+/** Fetch (with cache) one tournament's record from the IFPA API. Null on any failure. */
+function fetch_ifpa_tournament(string $id, string $api_key, array &$cache, int $ttl): ?array {
+    if (isset($cache[$id]) && (time() - $cache[$id]['timestamp']) <= $ttl) {
+        return $cache[$id]['data'];
+    }
+    $ch = curl_init("https://api.ifpapinball.com/tournament/{$id}?api_key={$api_key}");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    $response  = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($response !== false && $http_code === 200) {
+        $data = json_decode($response, true);
+        if (is_array($data) && isset($data['tournament_id'])) {
+            $cache[$id] = ['timestamp' => time(), 'data' => $data];
+            return $data;
+        }
+    }
+    // Fetch failed — fall back to a stale cached copy if we have one, rather than nothing.
+    return $cache[$id]['data'] ?? null;
+}
+
+/** IFPA addresses come back SHOUTING IN ALL CAPS — title-case them, but keep short
+ *  tokens (state codes, directionals like "N"/"S") upper so "TX" doesn't become "Tx". */
+function title_case_address(string $s): string {
+    $tokens = preg_split('/([\s,]+)/', $s, -1, PREG_SPLIT_DELIM_CAPTURE);
+    foreach ($tokens as &$tok) {
+        if (!preg_match('/^[A-Za-z]+$/', $tok)) continue;
+        $tok = mb_strlen($tok) <= 2 ? mb_strtoupper($tok) : mb_convert_case(mb_strtolower($tok), MB_CASE_TITLE, 'UTF-8');
+    }
+    return implode('', $tokens);
+}
+
+/** Build a clean one-line address from an IFPA tournament record, if it has one. */
+function ifpa_venue_address(array $t): ?string {
+    $raw = trim(str_replace(["\r\n", "\r", "\n"], ', ', $t['raw_address'] ?? ''));
+    $raw = trim($raw, ", ");
+    if ($raw !== '') return title_case_address($raw);
+
+    $parts = array_filter([
+        $t['address1'] ?? '',
+        $t['city'] ?? '',
+        trim(($t['stateprov'] ?? '') . ' ' . ($t['postal_code'] ?? '')),
+    ]);
+    return $parts ? title_case_address(implode(', ', $parts)) : null;
+}
+
+/** Normalize a matched time fragment ("11:30 AM", "NOON", "7pm") to "H:MM AM/PM". */
+function normalize_time_token(string $raw): string {
+    $raw = trim($raw);
+    if (stripos($raw, 'noon') !== false) return '12:00 PM';
+    if (stripos($raw, 'midnight') !== false) return '12:00 AM';
+    if (preg_match('/(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m?\.?/i', $raw, $m)) {
+        $hour = (int) $m[1];
+        $min  = $m[2] ?? '00';
+        return "{$hour}:{$min} " . strtoupper($m[3]) . 'M';
+    }
+    return strtoupper($raw);
+}
+
+/** Look for "doors open" / tournament-start phrasing in freeform event text. */
+function extract_schedule(string $text): array {
+    $time = '(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)|noon|midnight)';
+    $doors = $start = null;
+
+    if (preg_match('/\bdoors?\s*open\w*[^.\n]{0,40}?' . $time . '/i', $text, $m)) {
+        $doors = normalize_time_token($m[1]);
+    }
+    foreach ([
+        '/\bfirst\s*(?:flip|ball)(?:\s*attempt)?\b[^.\n]{0,40}?' . $time . '/i',
+        '/\btournament\s*(?:meeting\s*\/?\s*start|start)\b[^.\n]{0,40}?' . $time . '/i',
+        '/\bstart\s*time\b[^.\n]{0,40}?' . $time . '/i',
+    ] as $pattern) {
+        if (preg_match($pattern, $text, $m)) {
+            $start = normalize_time_token($m[1]);
+            break;
+        }
+    }
+    return ['doors' => $doors, 'start' => $start];
+}
+
 // ── Load + classify ─────────────────────────────────────────────────────
 $all_events = $ics ? parse_ics_events($ics) : [];
 
@@ -225,15 +328,54 @@ foreach ($all_events as $e) {
 
 usort($upcoming, fn($a, $b) => $a['start'] <=> $b['start']);
 
+// Load the IFPA cache once; fetch_ifpa_tournament() fills in gaps below, then we save it back once.
+$ifpa_cache = [];
+if (file_exists($ifpa_cache_file)) {
+    $decoded = json_decode(file_get_contents($ifpa_cache_file), true);
+    if (is_array($decoded)) $ifpa_cache = $decoded;
+}
+$ifpa_cache_dirty = false;
+
 foreach ($upcoming as &$e) {
     $e['urls']        = extract_urls($e['description_raw']);
-    $e['reg_sentence'] = reg_sentence($e['description']);
     $e['not_league']   = (bool) preg_match($NOT_LEAGUE, $e['summary'] . ' ' . $e['description']);
     $e['tbd']          = (bool) preg_match('/\btbd\b|forthcoming|details? (?:to come|coming soon)/i', $e['summary'] . ' ' . $e['description']);
     $e['multiday']     = $e['end'] && $e['end']->diff($e['start'])->days >= 1 &&
                           ($e['allday'] ? $e['end']->diff($e['start'])->days >= 1 : $e['end']->format('Y-m-d') !== $e['start']->format('Y-m-d'));
+
+    // Calendar text is the baseline; an IFPA tournament page, once created, tends to carry the
+    // confirmed venue address and day-of schedule earlier than the calendar entry gets updated.
+    $e['venue'] = $e['location'];
+    $e['venue_confirmed'] = false;
+    $sched = extract_schedule($e['description']);
+
+    $ifpa_id = extract_ifpa_id($e['urls']);
+    if ($ifpa_id) {
+        $tournament = fetch_ifpa_tournament($ifpa_id, $ifpa_api_key, $ifpa_cache, $cache_ttl);
+        $ifpa_cache_dirty = true; // harmless to re-save even on a pure cache hit
+
+        if ($tournament) {
+            $addr = ifpa_venue_address($tournament);
+            if ($addr) {
+                $e['venue']           = $addr;
+                $e['venue_confirmed'] = true;
+            }
+            if (!empty($tournament['details'])) {
+                $ifpa_text = str_replace(["\r\n", "\r"], "\n", $tournament['details']);
+                $ifpa_sched = extract_schedule($ifpa_text);
+                $sched['doors'] = $sched['doors'] ?? $ifpa_sched['doors'];
+                $sched['start'] = $sched['start'] ?? $ifpa_sched['start'];
+            }
+        }
+    }
+    $e['sched'] = $sched;
+    $e['reg_sentence'] = reg_sentence($e['description']);
 }
 unset($e);
+
+if ($ifpa_cache_dirty) {
+    file_put_contents($ifpa_cache_file, json_encode($ifpa_cache));
+}
 
 $last_updated = null;
 if (file_exists($cache_file)) {
@@ -356,6 +498,17 @@ if (file_exists($cache_file)) {
     margin-left: 6px; vertical-align: middle;
   }
   .evt-loc { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .venue-confirmed {
+    color: var(--green); font-size: 10px; font-family: 'DM Mono', monospace;
+    margin-left: 5px; white-space: nowrap;
+  }
+
+  .evt-sched { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .sched-pill {
+    font-size: 11px; font-family: 'DM Mono', monospace; color: var(--text);
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 8px;
+  }
 
   .evt-reg {
     margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -476,7 +629,18 @@ if (file_exists($cache_file)) {
           <?= esc($e['summary']) ?>
           <?php if ($e['not_league']): ?><span class="evt-badge">Not a League Event</span><?php endif; ?>
         </div>
-        <?php if ($e['location']): ?><div class="evt-loc">&#128205; <?= esc($e['location']) ?></div><?php endif; ?>
+        <?php if ($e['venue']): ?>
+        <div class="evt-loc">
+          &#128205; <?= esc($e['venue']) ?>
+          <?php if ($e['venue_confirmed']): ?><span class="venue-confirmed">&#10003; confirmed via IFPA</span><?php endif; ?>
+        </div>
+        <?php endif; ?>
+        <?php if ($e['sched']['doors'] || $e['sched']['start']): ?>
+        <div class="evt-sched">
+          <?php if ($e['sched']['doors']): ?><span class="sched-pill">&#128682; Doors <?= esc($e['sched']['doors']) ?></span><?php endif; ?>
+          <?php if ($e['sched']['start']): ?><span class="sched-pill">&#127937; Start <?= esc($e['sched']['start']) ?></span><?php endif; ?>
+        </div>
+        <?php endif; ?>
 
         <div class="evt-reg">
           <?php if ($e['reg_sentence']): ?>
