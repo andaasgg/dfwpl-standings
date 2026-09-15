@@ -728,7 +728,7 @@ if (file_exists($cache_file)) {
   .date-badge .day2 { font-size: 13px; color: var(--muted); margin-top: -2px; }
 
   .evt-name { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.35; }
-  .evt-league-icon { height: 18px; width: auto; vertical-align: middle; margin-right: 5px; }
+  .date-badge .evt-league-icon { height: auto; width: 36px; margin-top: 6px; }
   .evt-badge {
     display: inline-block; font-family: 'DM Mono', monospace; font-size: 9px;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
@@ -882,12 +882,12 @@ if (file_exists($cache_file)) {
         <div class="dow"><?= esc($dow) ?></div>
         <div class="day"><?= esc($mon) ?> <?= esc($day) ?><?= $range ?></div>
         <?php if (!$e['allday']): ?><div class="day2"><?= esc($e['start']->format('g:ia')) ?></div><?php endif; ?>
+        <?php if ($show_regional && $e['source'] === 'dfw' && !$e['not_league']): ?>
+          <img src="../assets/dfwpl-logo-small.png" alt="" class="evt-league-icon" title="Official DFW Pinball League event">
+        <?php endif; ?>
       </div>
       <div class="evt-body">
         <div class="evt-name">
-          <?php if ($show_regional && $e['source'] === 'dfw' && !$e['not_league']): ?>
-            <img src="../assets/dfwpl-logo-small.png" alt="" class="evt-league-icon" title="Official DFW Pinball League event">
-          <?php endif; ?>
           <?= esc($e['summary']) ?>
           <?php if ($e['not_league']): ?><span class="evt-badge">Not a League Event</span><?php endif; ?>
           <?php if ($e['source'] === 'regional'): ?><span class="evt-badge">Regional</span><?php endif; ?>
