@@ -281,7 +281,9 @@ function normalize_time_token(string $raw): string {
     if (stripos($raw, 'midnight') !== false) return '12:00 AM';
     if (preg_match('/(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m?\.?/i', $raw, $m)) {
         $hour = (int) $m[1];
-        $min  = $m[2] ?? '00';
+        // Optional minute group is forced into $m as '' (not unset) whenever the AM/PM group
+        // after it matches — so `??` alone won't catch a bare "5PM" and would print "5: PM".
+        $min = ($m[2] ?? '') !== '' ? $m[2] : '00';
         return "{$hour}:{$min} " . strtoupper($m[3]) . 'M';
     }
     return strtoupper($raw);
@@ -306,6 +308,94 @@ function extract_schedule(string $text): array {
         }
     }
     return ['doors' => $doors, 'start' => $start];
+}
+
+// ── Regional feed (Matchplay's DFW-area calendar, shown only via ?region=1) ─
+// Shaped very differently from the Google Calendar feed: no DESCRIPTION field
+// at all (so no registration blurb or full-details panel for these), but it
+// does carry a direct tournament-page URL and sometimes a venue name. It also
+// lists sub-bracket "Finals for X" sessions as their own events, and mixes in
+// the league's own tournaments (which the primary feed already covers) and a
+// lot of weekly/monthly regulars at other venues — all filtered out below.
+
+/** Same block-splitting approach as parse_ics_events(), interpreted for the Matchplay feed's fields. */
+function parse_regional_events(string $data): array {
+    $data = str_replace("\r\n", "\n", $data);
+    $data = preg_replace('/\n[ \t]/', '', $data); // unfold continuation lines
+    preg_match_all('/BEGIN:VEVENT\n(.*?)\nEND:VEVENT/s', $data, $blocks);
+
+    $events = [];
+    foreach ($blocks[1] as $block) {
+        $fields = [];
+        foreach (explode("\n", $block) as $line) {
+            if (!preg_match('/^([A-Z0-9\-]+)(;[^:]*)?:(.*)$/', $line, $m)) continue;
+            $key = $m[1];
+            if (!isset($fields[$key])) {
+                $fields[$key] = ['params' => $m[2] ?? '', 'value' => $m[3]];
+            }
+        }
+        if (!isset($fields['DTSTART'])) continue;
+
+        $allday = strpos($fields['DTSTART']['params'] ?? '', 'VALUE=DATE') !== false
+            || strlen($fields['DTSTART']['value']) === 8;
+
+        $start = ics_parse_dt($fields['DTSTART']['value'], $allday);
+        $end   = isset($fields['DTEND']) ? ics_parse_dt($fields['DTEND']['value'], $allday) : null;
+        if (!$start) continue;
+        // Unlike Google's feed, this one just sets DTEND = DTSTART for single-day/point events —
+        // it doesn't use the "exclusive end date" convention, so only pull back a real span.
+        if ($allday && $end && $end > $start) {
+            $end->modify('-1 day');
+        }
+
+        // The venue name (e.g. "Free Play Arcade") lives in X-APPLE-STRUCTURED-LOCATION's X-TITLE,
+        // separately from the street address in LOCATION.
+        $venue_name = null;
+        if (preg_match('/X-TITLE=([^:]+):geo:/', $block, $vm)) {
+            $venue_name = ics_unescape(trim($vm[1]));
+        }
+        $location = ics_unescape($fields['LOCATION']['value'] ?? '');
+        if ($venue_name && stripos($location, $venue_name) === false) {
+            $location = $location !== '' ? "{$venue_name} — {$location}" : $venue_name;
+        }
+
+        $events[] = [
+            'uid'      => $fields['UID']['value'] ?? '',
+            'summary'  => ics_unescape($fields['SUMMARY']['value'] ?? ''),
+            'location' => $location,
+            'url'      => ics_unescape($fields['URL']['value'] ?? ($fields['ATTACH']['value'] ?? '')),
+            'start'    => $start,
+            'end'      => $end,
+            'allday'   => $allday,
+        ];
+    }
+    return $events;
+}
+
+/** Matchplay tournament id out of a matchplay.events URL, if any. */
+function extract_matchplay_id(string $url): ?string {
+    return preg_match('#matchplay\.events/tournaments/(\d+)#i', $url, $m) ? $m[1] : null;
+}
+
+/** A regional-feed entry's own identity on either platform, from its UID first (structural and
+ *  reliable), falling back to parsing its one URL. Used only to cross-reference against the
+ *  primary feed's own links — never to fuzzy-match by title/date, which risks false positives. */
+function regional_ifpa_id(array $re): ?string {
+    if (preg_match('/^ifpaEvent:(\d+)/', $re['uid'], $m)) return $m[1];
+    return extract_ifpa_id([$re['url']]);
+}
+function regional_matchplay_id(array $re): ?string {
+    if (preg_match('/^tournament:(\d+)/', $re['uid'], $m)) return $m[1];
+    return extract_matchplay_id($re['url']);
+}
+
+/** Normalize a title for recurrence detection — strips the bits that make otherwise-identical
+ *  weekly/monthly series look like distinct one-off events ("(9/7/26)", "#3"). */
+function recurrence_key(string $summary): string {
+    $s = strtolower($summary);
+    $s = preg_replace('/\s*\(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\)\s*$/', '', $s);
+    $s = preg_replace('/\s*#\d+\s*$/', '', $s);
+    return trim(preg_replace('/\s+/', ' ', $s));
 }
 
 // ── Load + classify ─────────────────────────────────────────────────────
@@ -338,6 +428,8 @@ $ifpa_cache_dirty = false;
 
 foreach ($upcoming as &$e) {
     $e['urls']        = extract_urls($e['description_raw']);
+    $e['source']       = 'dfw';
+    $e['recurring']    = false;
     $e['not_league']   = (bool) preg_match($NOT_LEAGUE, $e['summary'] . ' ' . $e['description']);
     $e['tbd']          = (bool) preg_match('/\btbd\b|forthcoming|details? (?:to come|coming soon)/i', $e['summary'] . ' ' . $e['description']);
     $e['multiday']     = $e['end'] && $e['end']->diff($e['start'])->days >= 1 &&
@@ -375,6 +467,144 @@ unset($e);
 
 if ($ifpa_cache_dirty) {
     file_put_contents($ifpa_cache_file, json_encode($ifpa_cache));
+}
+
+// ── Fetch + merge the regional feed, only when the viewer asked for it ─────
+$show_regional  = isset($_GET['region']) && $_GET['region'] !== '' && $_GET['region'] !== '0';
+$regional_error = null;
+
+if ($show_regional) {
+    $regional_ics_url    = 'https://app.matchplay.events/api/ical/region/dfw';
+    $regional_cache_file = sys_get_temp_dir() . '/dfwpl_events.regional.ics.json';
+
+    $regional_cached = null;
+    $regional_age    = null;
+    if (file_exists($regional_cache_file)) {
+        $robj = json_decode(file_get_contents($regional_cache_file), true);
+        if ($robj && isset($robj['timestamp'], $robj['data'])) {
+            $regional_age    = time() - $robj['timestamp'];
+            $regional_cached = $robj['data'];
+        }
+    }
+
+    $regional_ics = null;
+    if ($regional_cached === null || $regional_age > $cache_ttl) {
+        $ch = curl_init($regional_ics_url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        $resp = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($resp !== false && $code === 200 && strpos($resp, 'BEGIN:VCALENDAR') !== false) {
+            $regional_ics = $resp;
+            file_put_contents($regional_cache_file, json_encode(['timestamp' => time(), 'data' => $resp]));
+        } elseif ($regional_cached !== null) {
+            $regional_ics = $regional_cached;
+        } else {
+            $regional_error = 'Could not load the regional calendar right now.';
+        }
+    } else {
+        $regional_ics = $regional_cached;
+    }
+
+    if ($regional_ics) {
+        // Tournaments the primary DFW feed already covers, indexed by whichever platform id(s) it links.
+        $primary_ifpa_ids = [];
+        $primary_matchplay_ids = [];
+        foreach ($upcoming as $pe) {
+            $id = extract_ifpa_id($pe['urls']);
+            if ($id) $primary_ifpa_ids[$id] = true;
+            foreach ($pe['urls'] as $u) {
+                $mid = extract_matchplay_id($u);
+                if ($mid) $primary_matchplay_ids[$mid] = true;
+            }
+        }
+
+        $future_regional = array_values(array_filter(
+            parse_regional_events($regional_ics),
+            fn($re) => $re['start'] >= $today_midnight
+        ));
+        usort($future_regional, fn($a, $b) => $a['start'] <=> $b['start']);
+
+        // Filter out: sub-bracket "Finals for X" sessions (not separate events), the league's own
+        // tournaments (the primary feed already has these — matched by id, and by title prefix as
+        // a backstop for whenever the calendar entry hasn't been cross-linked yet), and the same
+        // "skip weekly regulars" rule the primary feed applies (e.g. Turbo Tuesday).
+        $candidates = [];
+        foreach ($future_regional as $re) {
+            if (preg_match('/\bfinals\s+for\b/i', $re['summary'])) continue;
+            if (stripos($re['summary'], 'dfw pinball league') === 0) continue;
+            if (preg_match($RECURRING, $re['summary'])) continue;
+
+            $ifpa_id = regional_ifpa_id($re);
+            if ($ifpa_id && isset($primary_ifpa_ids[$ifpa_id])) continue;
+            $mp_id = regional_matchplay_id($re);
+            if ($mp_id && isset($primary_matchplay_ids[$mp_id])) continue;
+
+            $candidates[] = $re;
+        }
+
+        // The regional feed itself sometimes lists the same tournament twice — once via its IFPA
+        // listing (date only, no time) and once via its Matchplay listing (exact date + time) — same
+        // title, same day. Collapse those, preferring whichever copy actually carries a time.
+        $dedup_index = [];
+        $deduped = [];
+        foreach ($candidates as $re) {
+            $key = strtolower($re['summary']) . '|' . $re['start']->format('Y-m-d');
+            if (isset($dedup_index[$key])) {
+                $i = $dedup_index[$key];
+                if ($deduped[$i]['allday'] && !$re['allday']) $deduped[$i] = $re;
+                continue;
+            }
+            $dedup_index[$key] = count($deduped);
+            $deduped[] = $re;
+        }
+        $candidates = $deduped;
+
+        // Weekly/monthly series (Free Play Denton Pinball Monday, FPPL - Season 21 - Richardson #N, …)
+        // collapse down to just their next occurrence, rather than listing every future date.
+        $counts = [];
+        foreach ($candidates as $re) {
+            $key = recurrence_key($re['summary']);
+            $counts[$key] = ($counts[$key] ?? 0) + 1;
+        }
+
+        $seen_series = [];
+        $regional_extra = [];
+        foreach ($candidates as $re) {
+            $key = recurrence_key($re['summary']);
+            $is_recurring = $counts[$key] >= 3;
+            if ($is_recurring) {
+                if (isset($seen_series[$key])) continue;
+                $seen_series[$key] = true;
+            }
+
+            $regional_extra[] = [
+                'summary'         => $re['summary'],
+                'description'     => '',
+                'description_raw' => '',
+                'location'        => $re['location'],
+                'venue'           => $re['location'],
+                'venue_confirmed' => false,
+                'start'           => $re['start'],
+                'end'             => $re['end'],
+                'allday'          => $re['allday'],
+                'urls'            => $re['url'] ? [$re['url']] : [],
+                'not_league'      => false,
+                'tbd'             => false,
+                'reg_sentence'    => null,
+                'sched'           => ['doors' => null, 'start' => null],
+                'multiday'        => (bool) ($re['end'] && $re['end'] > $re['start']),
+                'source'          => 'regional',
+                'recurring'       => $is_recurring,
+            ];
+        }
+
+        $upcoming = array_merge($upcoming, $regional_extra);
+        usort($upcoming, fn($a, $b) => $a['start'] <=> $b['start']);
+    }
 }
 
 $last_updated = null;
@@ -465,6 +695,10 @@ if (file_exists($cache_file)) {
     padding: 5px 12px; transition: border-color 0.15s, color 0.15s;
   }
   .links-bar a:hover { border-color: var(--accent); color: var(--accent); }
+  .links-bar a.toggle-region {
+    margin-left: auto; color: var(--accent); border-color: rgba(217, 58, 16, 0.35);
+  }
+  .links-bar a.toggle-region:hover { background: var(--accent); color: #fff; }
 
   .month-head {
     font-family: 'Bebas Neue', sans-serif; font-size: 16px; letter-spacing: 0.08em;
@@ -553,6 +787,11 @@ if (file_exists($cache_file)) {
     border: 1px solid var(--border); border-top: none; }
   .error-msg { color: var(--accent); }
 
+  .regional-notice {
+    padding: 8px 16px; text-align: center; color: var(--accent); font-size: 12px;
+    background: rgba(217, 58, 16, 0.06); border: 1px solid var(--border); border-top: none;
+  }
+
   .footer {
     border: 1px solid var(--border); border-top: none; background: var(--surface2);
     padding: 12px 16px; font-size: 11px; color: var(--muted); font-family: 'DM Mono', monospace;
@@ -570,7 +809,11 @@ if (file_exists($cache_file)) {
       <div class="title-block">
         <div class="eyebrow">DFW Pinball League</div>
         <div class="title">Upcoming Events</div>
-        <div class="subtitle">What, where, when — and a link to register. Full writeups live on the league site.</div>
+        <div class="subtitle">
+          <?= $show_regional
+            ? 'DFW League events plus other regional tournaments, deduped and sorted by date.'
+            : 'What, where, when — and a link to register. Full writeups live on the league site.' ?>
+        </div>
       </div>
       <?php
         if ($from_cache && $cache_age !== null) {
@@ -589,7 +832,16 @@ if (file_exists($cache_file)) {
     <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">Full League Site &#8599;</a>
     <a href="<?= esc($cal_url) ?>" target="_blank" rel="noopener">Google Calendar &#8599;</a>
     <a href="../index.php">Standings &amp; Rankings</a>
+    <?php if ($show_regional): ?>
+      <a href="?" class="toggle-region">&larr; DFW League Only</a>
+    <?php else: ?>
+      <a href="?region=1" class="toggle-region">+ All DFW-Area Events</a>
+    <?php endif; ?>
   </div>
+
+  <?php if ($regional_error): ?>
+    <div class="regional-notice">&#9888; <?= esc($regional_error) ?> Showing DFW League events only.</div>
+  <?php endif; ?>
 
   <?php if ($error): ?>
     <div class="error-msg">&#9888; <?= esc($error) ?></div>
@@ -628,6 +880,8 @@ if (file_exists($cache_file)) {
         <div class="evt-name">
           <?= esc($e['summary']) ?>
           <?php if ($e['not_league']): ?><span class="evt-badge">Not a League Event</span><?php endif; ?>
+          <?php if ($e['source'] === 'regional'): ?><span class="evt-badge">Regional</span><?php endif; ?>
+          <?php if ($e['recurring']): ?><span class="evt-badge">Recurring</span><?php endif; ?>
         </div>
         <?php if ($e['venue']): ?>
         <div class="evt-loc">
@@ -672,6 +926,10 @@ if (file_exists($cache_file)) {
 
   <div class="footer">
     Skips weekly Carpool Pinball &ldquo;Turbo Tuesday&rdquo; nights in Southlake &mdash; see the calendar for those dates.<br>
+    <?php if ($show_regional): ?>
+      Regional events are from Matchplay's DFW-area calendar &mdash; league tournaments, sub-bracket
+      finals, and recurring weekly/monthly nights are filtered or collapsed to their next date.<br>
+    <?php endif; ?>
     Built from the league's public Google Calendar<?= $last_updated ? ' &bull; refreshed ' . esc($last_updated->format('M j, g:ia')) : '' ?>.
     Something missing? Check the <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">full site</a>.
   </div>
