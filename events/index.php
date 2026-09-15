@@ -663,7 +663,10 @@ if (file_exists($cache_file)) {
   }
   @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-  .header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+  .title-row { display: flex; align-items: center; gap: 14px; }
+  .header-logo { height: 52px; width: auto; flex-shrink: 0; }
 
   .eyebrow {
     font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.2em;
@@ -725,6 +728,7 @@ if (file_exists($cache_file)) {
   .date-badge .day2 { font-size: 13px; color: var(--muted); margin-top: -2px; }
 
   .evt-name { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.35; }
+  .evt-league-icon { height: 18px; width: auto; vertical-align: middle; margin-right: 5px; }
   .evt-badge {
     display: inline-block; font-family: 'DM Mono', monospace; font-size: 9px;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
@@ -806,13 +810,16 @@ if (file_exists($cache_file)) {
 <div class="embed">
   <div class="header">
     <div class="header-top">
-      <div class="title-block">
-        <div class="eyebrow">DFW Pinball League</div>
-        <div class="title">Upcoming Events</div>
-        <div class="subtitle">
-          <?= $show_regional
-            ? 'DFW League events plus other regional tournaments, deduped and sorted by date.'
-            : 'What, where, when — and a link to register. Full writeups live on the league site.' ?>
+      <div class="title-row">
+        <img src="../assets/dfwpl-logo-small.png" alt="DFW Pinball League" class="header-logo">
+        <div class="title-block">
+          <div class="eyebrow">DFW Pinball League</div>
+          <div class="title">Upcoming Events</div>
+          <div class="subtitle">
+            <?= $show_regional
+              ? 'DFW League events plus other regional tournaments, deduped and sorted by date.'
+              : 'What, where, when — and a link to register. Full writeups live on the league site.' ?>
+          </div>
         </div>
       </div>
       <?php
@@ -878,6 +885,9 @@ if (file_exists($cache_file)) {
       </div>
       <div class="evt-body">
         <div class="evt-name">
+          <?php if ($show_regional && $e['source'] === 'dfw' && !$e['not_league']): ?>
+            <img src="../assets/dfwpl-logo-small.png" alt="" class="evt-league-icon" title="Official DFW Pinball League event">
+          <?php endif; ?>
           <?= esc($e['summary']) ?>
           <?php if ($e['not_league']): ?><span class="evt-badge">Not a League Event</span><?php endif; ?>
           <?php if ($e['source'] === 'regional'): ?><span class="evt-badge">Regional</span><?php endif; ?>
