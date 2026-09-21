@@ -22,6 +22,10 @@ $cache_ttl  = 1800; // 30 minutes
 $ifpa_api_key    = '55b97a4ccf9b9c4ee2d443b2737574ab';
 $ifpa_cache_file = sys_get_temp_dir() . '/dfwpl_events.ifpa.json';
 
+// IFPA directors whose upcoming tournaments belong in the regional view — local events that fall
+// just outside the Matchplay DFW-region filter. 3849 = Chris Noah (Pottsboro).
+$ifpa_director_ids = ['3849'];
+
 $site_url = 'https://sites.google.com/view/dfwpinballleague/';
 $cal_url  = 'https://calendar.google.com/calendar/embed?src=1dc4993689322ae4fa6b280c904495bab049f75f2a41475cf4091cc7b01fb2c5%40group.calendar.google.com&ctz=America%2FChicago';
 
@@ -310,13 +314,15 @@ function extract_schedule(string $text): array {
     return ['doors' => $doors, 'start' => $start];
 }
 
-// ── Regional feed (Matchplay's DFW-area calendar, shown only via ?region=1) ─
-// Shaped very differently from the Google Calendar feed: no DESCRIPTION field
-// at all (so no registration blurb or full-details panel for these), but it
-// does carry a direct tournament-page URL and sometimes a venue name. It also
-// lists sub-bracket "Finals for X" sessions as their own events, and mixes in
-// the league's own tournaments (which the primary feed already covers) and a
-// lot of weekly/monthly regulars at other venues — all filtered out below.
+// ── Regional sources (shown only via ?region=1) ─────────────────────────
+// Matchplay's DFW-area calendar, plus the upcoming tournaments of any extra
+// IFPA directors (local events just outside Matchplay's region filter).
+// Both are shaped very differently from the Google Calendar feed: no
+// DESCRIPTION text at all (so no registration blurb or full-details panel for
+// these), but a direct tournament-page URL. The Matchplay feed also lists
+// sub-bracket "Finals for X" sessions as their own events, and mixes in the
+// league's own tournaments (which the primary feed already covers) and a lot
+// of weekly/monthly regulars at other venues — all filtered out below.
 
 /** Same block-splitting approach as parse_ics_events(), interpreted for the Matchplay feed's fields. */
 function parse_regional_events(string $data): array {
@@ -370,6 +376,74 @@ function parse_regional_events(string $data): array {
         ];
     }
     return $events;
+}
+
+/** GET a URL through a file cache, falling back to a stale copy if the fetch fails. Returns the
+ *  body, or null when the fetch failed and nothing is cached. $is_valid rejects error pages that
+ *  come back with a 200. Lets each regional source succeed or fail independently of the others. */
+function fetch_cached(string $url, string $cache_file, int $ttl, callable $is_valid): ?string {
+    $cached = null;
+    $age    = null;
+    if (file_exists($cache_file)) {
+        $obj = json_decode(file_get_contents($cache_file), true);
+        if ($obj && isset($obj['timestamp'], $obj['data'])) {
+            $age    = time() - $obj['timestamp'];
+            $cached = $obj['data'];
+        }
+    }
+    if ($cached !== null && $age <= $ttl) return $cached;
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($resp !== false && $code === 200 && $is_valid($resp)) {
+        file_put_contents($cache_file, json_encode(['timestamp' => time(), 'data' => $resp]));
+        return $resp;
+    }
+    return $cached;
+}
+
+/** An IFPA director's upcoming tournaments, normalized into the same record shape that
+ *  parse_regional_events() produces so both flow through one dedup pipeline. The list endpoint
+ *  only carries date + city, so these are date-only (all-day) entries with a city for a location. */
+function parse_ifpa_director_events(string $json): array {
+    $data = json_decode($json, true);
+    $events = [];
+    foreach ($data['tournaments'] ?? [] as $t) {
+        if (empty($t['tournament_id']) || empty($t['event_start_date'])) continue;
+        $start = ics_parse_dt(str_replace('-', '', $t['event_start_date']), true);
+        $end   = ics_parse_dt(str_replace('-', '', $t['event_end_date'] ?? $t['event_start_date']), true);
+        if (!$start) continue;
+        $events[] = [
+            'uid'      => 'ifpaEvent:' . $t['tournament_id'],
+            'summary'  => trim($t['tournament_name'] ?? ''),
+            'location' => implode(', ', array_filter([$t['city'] ?? '', $t['stateprov_code'] ?? ''])),
+            'url'      => 'https://www.ifpapinball.com/tournaments/view.php?t=' . $t['tournament_id'],
+            'start'    => $start,
+            'end'      => $end,
+            'allday'   => true,
+        ];
+    }
+    return $events;
+}
+
+/** True when a league event's own writeup already names this tournament, on a day inside that
+ *  event's date span — e.g. the Thursday warmup listed in a Halloween-weekend event's details.
+ *  Exact name + date containment, not fuzzy matching, so a look-alike title can't hide a real event. */
+function named_in_primary_event(array $re, array $primary): bool {
+    if ($re['summary'] === '') return false;
+    $day = $re['start']->format('Y-m-d');
+    foreach ($primary as $pe) {
+        $from = $pe['start']->format('Y-m-d');
+        $to   = ($pe['end'] ?? $pe['start'])->format('Y-m-d');
+        if ($day >= $from && $day <= $to && stripos($pe['description'], $re['summary']) !== false) return true;
+    }
+    return false;
 }
 
 /** Matchplay tournament id out of a matchplay.events URL, if any. */
@@ -470,46 +544,43 @@ if ($ifpa_cache_dirty) {
 }
 
 // ── Fetch + merge the regional feed, only when the viewer asked for it ─────
-$show_regional  = isset($_GET['region']) && $_GET['region'] !== '' && $_GET['region'] !== '0';
-$regional_error = null;
+$show_regional   = isset($_GET['region']) && $_GET['region'] !== '' && $_GET['region'] !== '0';
+$regional_failed = []; // names of regional sources that couldn't be loaded, for a small notice
 
 if ($show_regional) {
-    $regional_ics_url    = 'https://app.matchplay.events/api/ical/region/dfw';
-    $regional_cache_file = sys_get_temp_dir() . '/dfwpl_events.regional.ics.json';
+    // Two independent sources feed the regional view: Matchplay's DFW-area calendar, plus the
+    // upcoming tournaments of any extra IFPA directors. Either can fail without hiding the other.
+    $regional_raw = [];
 
-    $regional_cached = null;
-    $regional_age    = null;
-    if (file_exists($regional_cache_file)) {
-        $robj = json_decode(file_get_contents($regional_cache_file), true);
-        if ($robj && isset($robj['timestamp'], $robj['data'])) {
-            $regional_age    = time() - $robj['timestamp'];
-            $regional_cached = $robj['data'];
-        }
-    }
-
-    $regional_ics = null;
-    if ($regional_cached === null || $regional_age > $cache_ttl) {
-        $ch = curl_init($regional_ics_url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        $resp = curl_exec($ch);
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($resp !== false && $code === 200 && strpos($resp, 'BEGIN:VCALENDAR') !== false) {
-            $regional_ics = $resp;
-            file_put_contents($regional_cache_file, json_encode(['timestamp' => time(), 'data' => $resp]));
-        } elseif ($regional_cached !== null) {
-            $regional_ics = $regional_cached;
-        } else {
-            $regional_error = 'Could not load the regional calendar right now.';
-        }
+    $matchplay_ics = fetch_cached(
+        'https://app.matchplay.events/api/ical/region/dfw',
+        sys_get_temp_dir() . '/dfwpl_events.regional.ics.json',
+        $cache_ttl,
+        fn($body) => strpos($body, 'BEGIN:VCALENDAR') !== false
+    );
+    if ($matchplay_ics !== null) {
+        $regional_raw = array_merge($regional_raw, parse_regional_events($matchplay_ics));
     } else {
-        $regional_ics = $regional_cached;
+        $regional_failed[] = "Matchplay's regional calendar";
     }
 
-    if ($regional_ics) {
+    foreach ($ifpa_director_ids as $director_id) {
+        $director_json = fetch_cached(
+            "https://api.ifpapinball.com/director/{$director_id}/tournaments/future?api_key={$ifpa_api_key}",
+            sys_get_temp_dir() . "/dfwpl_events.ifpadir{$director_id}.json",
+            $cache_ttl,
+            // A director with nothing scheduled returns {"tournament_count":0} with no list at all —
+            // that's a valid empty answer, not a failed fetch.
+            fn($body) => ($d = json_decode($body, true)) && (isset($d['tournaments']) || isset($d['tournament_count']))
+        );
+        if ($director_json !== null) {
+            $regional_raw = array_merge($regional_raw, parse_ifpa_director_events($director_json));
+        } else {
+            $regional_failed[] = 'IFPA tournament listings';
+        }
+    }
+
+    if ($regional_raw) {
         // Tournaments the primary DFW feed already covers, indexed by whichever platform id(s) it links.
         $primary_ifpa_ids = [];
         $primary_matchplay_ids = [];
@@ -523,15 +594,16 @@ if ($show_regional) {
         }
 
         $future_regional = array_values(array_filter(
-            parse_regional_events($regional_ics),
+            $regional_raw,
             fn($re) => $re['start'] >= $today_midnight
         ));
         usort($future_regional, fn($a, $b) => $a['start'] <=> $b['start']);
 
         // Filter out: sub-bracket "Finals for X" sessions (not separate events), the league's own
         // tournaments (the primary feed already has these — matched by id, and by title prefix as
-        // a backstop for whenever the calendar entry hasn't been cross-linked yet), and the same
-        // "skip weekly regulars" rule the primary feed applies (e.g. Turbo Tuesday).
+        // a backstop for whenever the calendar entry hasn't been cross-linked yet), side tournaments
+        // a league event's own writeup already names, and the same "skip weekly regulars" rule the
+        // primary feed applies (e.g. Turbo Tuesday).
         $candidates = [];
         foreach ($future_regional as $re) {
             if (preg_match('/\bfinals\s+for\b/i', $re['summary'])) continue;
@@ -542,13 +614,14 @@ if ($show_regional) {
             if ($ifpa_id && isset($primary_ifpa_ids[$ifpa_id])) continue;
             $mp_id = regional_matchplay_id($re);
             if ($mp_id && isset($primary_matchplay_ids[$mp_id])) continue;
+            if (named_in_primary_event($re, $upcoming)) continue;
 
             $candidates[] = $re;
         }
 
-        // The regional feed itself sometimes lists the same tournament twice — once via its IFPA
-        // listing (date only, no time) and once via its Matchplay listing (exact date + time) — same
-        // title, same day. Collapse those, preferring whichever copy actually carries a time.
+        // The regional sources themselves sometimes list the same tournament twice — e.g. once via
+        // its IFPA listing (date only, no time) and once via its Matchplay listing (exact date + time)
+        // — same title, same day. Collapse those, preferring whichever copy actually carries a time.
         $dedup_index = [];
         $deduped = [];
         foreach ($candidates as $re) {
@@ -846,8 +919,8 @@ if (file_exists($cache_file)) {
     <?php endif; ?>
   </div>
 
-  <?php if ($regional_error): ?>
-    <div class="regional-notice">&#9888; <?= esc($regional_error) ?> Showing DFW League events only.</div>
+  <?php if ($regional_failed): ?>
+    <div class="regional-notice">&#9888; Couldn't load <?= esc(implode(' or ', array_unique($regional_failed))) ?> right now &mdash; some regional events may be missing.</div>
   <?php endif; ?>
 
   <?php if ($error): ?>
@@ -937,8 +1010,9 @@ if (file_exists($cache_file)) {
   <div class="footer">
     Skips weekly Carpool Pinball &ldquo;Turbo Tuesday&rdquo; nights in Southlake &mdash; see the calendar for those dates.<br>
     <?php if ($show_regional): ?>
-      Regional events are from Matchplay's DFW-area calendar &mdash; league tournaments, sub-bracket
-      finals, and recurring weekly/monthly nights are filtered or collapsed to their next date.<br>
+      Regional events come from Matchplay's DFW-area calendar plus local IFPA tournament listings
+      &mdash; league tournaments, sub-bracket finals, and recurring weekly/monthly nights are
+      filtered or collapsed to their next date.<br>
     <?php endif; ?>
     Built from the league's public Google Calendar<?= $last_updated ? ' &bull; refreshed ' . esc($last_updated->format('M j, g:ia')) : '' ?>.
     Something missing? Check the <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">full site</a>.
