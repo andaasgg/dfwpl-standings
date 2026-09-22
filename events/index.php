@@ -464,10 +464,10 @@ function regional_matchplay_id(array $re): ?string {
 }
 
 /** Normalize a title for recurrence detection — strips the bits that make otherwise-identical
- *  weekly/monthly series look like distinct one-off events ("(9/7/26)", "#3"). */
+ *  weekly/monthly series look like distinct one-off events ("(9/7/26)", "11/3/2026", "#3"). */
 function recurrence_key(string $summary): string {
     $s = strtolower($summary);
-    $s = preg_replace('/\s*\(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\)\s*$/', '', $s);
+    $s = preg_replace('/\s*\(?\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\)?\s*$/', '', $s);
     $s = preg_replace('/\s*#\d+\s*$/', '', $s);
     return trim(preg_replace('/\s+/', ' ', $s));
 }
@@ -476,7 +476,6 @@ function recurrence_key(string $summary): string {
 $all_events = $ics ? parse_ics_events($ics) : [];
 
 $REG_MARKER = '/^\s*(pre-?)?registration\b|registration\s*(\/\s*rsvp)?\s*(opens?|today)|register\s*\/\s*rsvp|^\s*\d+\s*(am|pm)\s*[-–]\s*pre-?registration/i';
-$RECURRING  = '/turbo tuesday/i';
 $NOT_LEAGUE = '/not a dfw league event|not counted toward|regional event|national event/i';
 
 $now = new DateTime('now', new DateTimeZone('America/Chicago'));
@@ -485,7 +484,6 @@ $today_midnight = new DateTime($now->format('Y-m-d'), new DateTimeZone('America/
 $upcoming = [];
 foreach ($all_events as $e) {
     if (preg_match($REG_MARKER, $e['summary'])) continue; // separate "registration opens" reminder, not the event itself
-    if (preg_match($RECURRING, $e['summary'])) continue;  // weekly regulars — digest skips these
     if ($e['start'] < $today_midnight) continue;
     $upcoming[] = $e;
 }
@@ -602,13 +600,11 @@ if ($show_regional) {
         // Filter out: sub-bracket "Finals for X" sessions (not separate events), the league's own
         // tournaments (the primary feed already has these — matched by id, and by title prefix as
         // a backstop for whenever the calendar entry hasn't been cross-linked yet), side tournaments
-        // a league event's own writeup already names, and the same "skip weekly regulars" rule the
-        // primary feed applies (e.g. Turbo Tuesday).
+        // a league event's own writeup already names.
         $candidates = [];
         foreach ($future_regional as $re) {
             if (preg_match('/\bfinals\s+for\b/i', $re['summary'])) continue;
             if (stripos($re['summary'], 'dfw pinball league') === 0) continue;
-            if (preg_match($RECURRING, $re['summary'])) continue;
 
             $ifpa_id = regional_ifpa_id($re);
             if ($ifpa_id && isset($primary_ifpa_ids[$ifpa_id])) continue;
@@ -693,7 +689,7 @@ if (file_exists($cache_file)) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DFW Pinball League Events</title>
+<title><?= $show_regional ? 'North Texas Regional Events' : 'DFW Pinball League Events' ?></title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -771,10 +767,25 @@ if (file_exists($cache_file)) {
     padding: 5px 12px; transition: border-color 0.15s, color 0.15s;
   }
   .links-bar a:hover { border-color: var(--accent); color: var(--accent); }
-  .links-bar a.toggle-region {
-    margin-left: auto; color: var(--accent); border-color: rgba(217, 58, 16, 0.35);
+
+  /* Two-option view switch: both choices always visible, current one filled in. */
+  .view-switch {
+    border: 1px solid var(--border); border-top: none; background: var(--surface2);
+    padding: 10px 16px 0;
   }
-  .links-bar a.toggle-region:hover { background: var(--accent); color: #fff; }
+  .view-switch .seg-wrap {
+    display: flex; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; background: var(--surface);
+  }
+  .view-switch a {
+    flex: 1; text-align: center; padding: 9px 10px; text-decoration: none;
+    font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--muted);
+    transition: color 0.15s, background 0.15s;
+  }
+  .view-switch a + a { border-left: 1px solid var(--border); }
+  .view-switch a:hover { color: var(--accent); }
+  .view-switch a[aria-current="true"] { background: var(--accent); color: #fff; cursor: default; }
 
   .month-head {
     font-family: 'Bebas Neue', sans-serif; font-size: 16px; letter-spacing: 0.08em;
@@ -886,11 +897,11 @@ if (file_exists($cache_file)) {
       <div class="title-row">
         <img src="../assets/dfwpl-logo-small.png" alt="DFW Pinball League" class="header-logo">
         <div class="title-block">
-          <div class="eyebrow">DFW Pinball League</div>
+          <div class="eyebrow"><?= $show_regional ? 'North Texas Regional' : 'DFW Pinball League' ?></div>
           <div class="title">Upcoming Events</div>
           <div class="subtitle">
             <?= $show_regional
-              ? 'DFW League events plus other regional tournaments, deduped and sorted by date.'
+              ? 'Everything in the DFW League view plus other North Texas tournaments, deduped and sorted by date.'
               : 'What, where, when — and a link to register. Full writeups live on the league site.' ?>
           </div>
         </div>
@@ -908,15 +919,17 @@ if (file_exists($cache_file)) {
     </div>
   </div>
 
+  <nav class="view-switch" aria-label="Event view">
+    <div class="seg-wrap">
+      <a href="?"<?= !$show_regional ? ' aria-current="true"' : '' ?>>DFW League</a>
+      <a href="?region=1"<?= $show_regional ? ' aria-current="true"' : '' ?>>North Texas Regional</a>
+    </div>
+  </nav>
+
   <div class="links-bar">
     <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">Full League Site &#8599;</a>
     <a href="<?= esc($cal_url) ?>" target="_blank" rel="noopener">Google Calendar &#8599;</a>
     <a href="../index.php">Standings &amp; Rankings</a>
-    <?php if ($show_regional): ?>
-      <a href="?" class="toggle-region">&larr; DFW League Only</a>
-    <?php else: ?>
-      <a href="?region=1" class="toggle-region">+ All DFW-Area Events</a>
-    <?php endif; ?>
   </div>
 
   <?php if ($regional_failed): ?>
@@ -1008,7 +1021,6 @@ if (file_exists($cache_file)) {
   <?php endif; ?>
 
   <div class="footer">
-    Skips weekly Carpool Pinball &ldquo;Turbo Tuesday&rdquo; nights in Southlake &mdash; see the calendar for those dates.<br>
     <?php if ($show_regional): ?>
       Regional events come from Matchplay's DFW-area calendar plus local IFPA tournament listings
       &mdash; league tournaments, sub-bracket finals, and recurring weekly/monthly nights are
