@@ -597,13 +597,22 @@ if ($show_regional) {
         ));
         usort($future_regional, fn($a, $b) => $a['start'] <=> $b['start']);
 
-        // Filter out: sub-bracket "Finals for X" sessions (not separate events), the league's own
-        // tournaments (the primary feed already has these — matched by id, and by title prefix as
-        // a backstop for whenever the calendar entry hasn't been cross-linked yet), side tournaments
-        // a league event's own writeup already names.
+        // Every regional event by lowercased title + day, so a "Finals for X" entry can check
+        // whether X itself is listed that same day.
+        $listed_on_day = [];
+        foreach ($future_regional as $re) {
+            $listed_on_day[strtolower(trim($re['summary'])) . '|' . $re['start']->format('Y-m-d')] = true;
+        }
+
+        // Filter out: bracket "Finals for X" sessions that run the same day as X itself (redundant
+        // with X's own row — but a finals night on its own date, like an FPPL season finals, is a
+        // real event and stays), the league's own tournaments (the primary feed already has these —
+        // matched by id, and by title prefix as a backstop for whenever the calendar entry hasn't
+        // been cross-linked yet), and side tournaments a league event's own writeup already names.
         $candidates = [];
         foreach ($future_regional as $re) {
-            if (preg_match('/\bfinals\s+for\b/i', $re['summary'])) continue;
+            if (preg_match('/^.*?\bfinals\s+for\s+(.+)$/i', $re['summary'], $fm)
+                && isset($listed_on_day[strtolower(trim($fm[1])) . '|' . $re['start']->format('Y-m-d')])) continue;
             if (stripos($re['summary'], 'dfw pinball league') === 0) continue;
 
             $ifpa_id = regional_ifpa_id($re);
@@ -632,8 +641,10 @@ if ($show_regional) {
         }
         $candidates = $deduped;
 
-        // Weekly/monthly series (Free Play Denton Pinball Monday, FPPL - Season 21 - Richardson #N, …)
-        // collapse down to just their next occurrence, rather than listing every future date.
+        // Repeating nights (Free Play Denton Pinball Monday, …) collapse down to just their next
+        // occurrence, rather than listing every future date. Numbered sessions ("… Richardson #3")
+        // are the exception: week 3 of a league season isn't a repeat of week 1, and each week is
+        // a chance for someone new to join, so every numbered session is listed.
         $counts = [];
         foreach ($candidates as $re) {
             $key = recurrence_key($re['summary']);
@@ -644,7 +655,8 @@ if ($show_regional) {
         $regional_extra = [];
         foreach ($candidates as $re) {
             $key = recurrence_key($re['summary']);
-            $is_recurring = $counts[$key] >= 3;
+            $is_numbered_session = (bool) preg_match('/#\d+\s*$/', $re['summary']);
+            $is_recurring = !$is_numbered_session && $counts[$key] >= 3;
             if ($is_recurring) {
                 if (isset($seen_series[$key])) continue;
                 $seen_series[$key] = true;
@@ -1023,8 +1035,9 @@ if (file_exists($cache_file)) {
   <div class="footer">
     <?php if ($show_regional): ?>
       Regional events come from Matchplay's DFW-area calendar plus local IFPA tournament listings
-      &mdash; league tournaments, sub-bracket finals, and recurring weekly/monthly nights are
-      filtered or collapsed to their next date.<br>
+      &mdash; DFW League tournaments and same-day bracket finals are filtered out, and repeating
+      weekly/monthly nights collapse to their next date. Numbered league weeks (like FPPL) and
+      their finals are all listed.<br>
     <?php endif; ?>
     Built from the league's public Google Calendar<?= $last_updated ? ' &bull; refreshed ' . esc($last_updated->format('M j, g:ia')) : '' ?>.
     Something missing? Check the <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">full site</a>.
