@@ -17,6 +17,10 @@ $ics_url    = 'https://calendar.google.com/calendar/ical/1dc4993689322ae4fa6b280
 $cache_file = sys_get_temp_dir() . '/dfwpl_events.ics.json';
 $cache_ttl  = 1800; // 30 minutes
 
+// How far ahead events are shown, in both views. Keeps the fully-listed weekly/monthly regional
+// series (Free Play Monday nights, etc.) from growing without bound as feeds extend into next year.
+$event_horizon_days = 90;
+
 // IFPA tournament pages fill in confirmed venue address + day-of schedule as the date nears —
 // often before the calendar entry itself gets updated. Same API key used by tournament/index.php.
 $ifpa_api_key    = '55b97a4ccf9b9c4ee2d443b2737574ab';
@@ -480,11 +484,12 @@ $NOT_LEAGUE = '/not a dfw league event|not counted toward|regional event|nationa
 
 $now = new DateTime('now', new DateTimeZone('America/Chicago'));
 $today_midnight = new DateTime($now->format('Y-m-d'), new DateTimeZone('America/Chicago'));
+$event_horizon  = (clone $today_midnight)->modify("+{$event_horizon_days} days");
 
 $upcoming = [];
 foreach ($all_events as $e) {
     if (preg_match($REG_MARKER, $e['summary'])) continue; // separate "registration opens" reminder, not the event itself
-    if ($e['start'] < $today_midnight) continue;
+    if ($e['start'] < $today_midnight || $e['start'] >= $event_horizon) continue;
     $upcoming[] = $e;
 }
 
@@ -593,7 +598,7 @@ if ($show_regional) {
 
         $future_regional = array_values(array_filter(
             $regional_raw,
-            fn($re) => $re['start'] >= $today_midnight
+            fn($re) => $re['start'] >= $today_midnight && $re['start'] < $event_horizon
         ));
         usort($future_regional, fn($a, $b) => $a['start'] <=> $b['start']);
 
@@ -641,26 +646,22 @@ if ($show_regional) {
         }
         $candidates = $deduped;
 
-        // Repeating nights (Free Play Denton Pinball Monday, …) collapse down to just their next
-        // occurrence, rather than listing every future date. Numbered sessions ("… Richardson #3")
-        // are the exception: week 3 of a league season isn't a repeat of week 1, and each week is
-        // a chance for someone new to join, so every numbered session is listed.
+        // Every upcoming occurrence is listed, including repeating nights (Free Play Denton Pinball
+        // Monday, …) — people use this page to plan weeks or months ahead, so the full schedule is
+        // more useful than just the next date. A series that repeats 3+ times still gets a
+        // "Recurring" badge as a hint; numbered sessions ("… Richardson #3") don't count as
+        // repeats of each other, since each is its own week of a season.
         $counts = [];
         foreach ($candidates as $re) {
             $key = recurrence_key($re['summary']);
             $counts[$key] = ($counts[$key] ?? 0) + 1;
         }
 
-        $seen_series = [];
         $regional_extra = [];
         foreach ($candidates as $re) {
             $key = recurrence_key($re['summary']);
             $is_numbered_session = (bool) preg_match('/#\d+\s*$/', $re['summary']);
             $is_recurring = !$is_numbered_session && $counts[$key] >= 3;
-            if ($is_recurring) {
-                if (isset($seen_series[$key])) continue;
-                $seen_series[$key] = true;
-            }
 
             $regional_extra[] = [
                 'summary'         => $re['summary'],
@@ -1034,11 +1035,10 @@ if (file_exists($cache_file)) {
 
   <div class="footer">
     <?php if ($show_regional): ?>
-      Regional events come from Matchplay's DFW-area calendar plus local IFPA tournament listings
-      &mdash; DFW League tournaments and same-day bracket finals are filtered out, and repeating
-      weekly/monthly nights collapse to their next date. Numbered league weeks (like FPPL) and
-      their finals are all listed.<br>
+      Regional events come from Matchplay's DFW-area calendar plus local IFPA tournament listings.
+      Same-day bracket finals are filtered out.<br>
     <?php endif; ?>
+    Showing events in the next <?= (int) $event_horizon_days ?> days.
     Built from the league's public Google Calendar<?= $last_updated ? ' &bull; refreshed ' . esc($last_updated->format('M j, g:ia')) : '' ?>.
     Something missing? Check the <a href="<?= esc($site_url) ?>" target="_blank" rel="noopener">full site</a>.
   </div>
