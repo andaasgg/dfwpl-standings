@@ -556,7 +556,7 @@ if ($show_regional) {
     $regional_raw = [];
 
     $matchplay_ics = fetch_cached(
-        'https://app.matchplay.events/api/ical/region/dfw',
+        'https://api.matchplay.events/api/ical/region/dfw',
         sys_get_temp_dir() . '/dfwpl_events.regional.ics.json',
         $cache_ttl,
         fn($body) => strpos($body, 'BEGIN:VCALENDAR') !== false
