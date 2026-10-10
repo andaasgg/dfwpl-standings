@@ -832,6 +832,10 @@ if (file_exists($cache_file)) {
     border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px;
     margin-left: 6px; vertical-align: middle;
   }
+  /* Regional / Recurring tags stack under the date. Those rows never carry the league icon (it's
+     only on DFW League events, which are neither), so the two never compete for the same space. */
+  .date-tags { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 7px; }
+  .date-tags .evt-badge { margin-left: 0; letter-spacing: 0.02em; padding: 1px 5px; }
   .evt-loc { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .venue-confirmed {
     color: var(--green); font-size: 10px; font-family: 'DM Mono', monospace;
@@ -984,13 +988,17 @@ if (file_exists($cache_file)) {
         <?php if ($show_regional && $e['source'] === 'dfw' && !$e['not_league']): ?>
           <img src="../assets/dfwpl-logo-small.png" alt="" class="evt-league-icon" title="Official DFW Pinball League event">
         <?php endif; ?>
+        <?php if ($e['source'] === 'regional' || $e['recurring']): ?>
+        <div class="date-tags">
+          <?php if ($e['source'] === 'regional'): ?><span class="evt-badge">Regional</span><?php endif; ?>
+          <?php if ($e['recurring']): ?><span class="evt-badge">Recurring</span><?php endif; ?>
+        </div>
+        <?php endif; ?>
       </div>
       <div class="evt-body">
         <div class="evt-name">
           <?= esc($e['summary']) ?>
           <?php if ($e['not_league']): ?><span class="evt-badge">Not a League Event</span><?php endif; ?>
-          <?php if ($e['source'] === 'regional'): ?><span class="evt-badge">Regional</span><?php endif; ?>
-          <?php if ($e['recurring']): ?><span class="evt-badge">Recurring</span><?php endif; ?>
         </div>
         <?php if ($e['venue']): ?>
         <div class="evt-loc">
