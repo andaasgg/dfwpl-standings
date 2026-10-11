@@ -764,8 +764,11 @@ if ($show_regional) {
 
             $regional_extra[] = [
                 'summary'         => $re['summary'],
-                'description'     => '',
-                'description_raw' => '',
+                // The IFPA writeup is the official one, and it's already in the cached record that
+                // doors/start/cost come from — no extra request to show it as the Full details.
+                'description'     => ics_strip_html($ifpa_text),
+                'description_raw' => $ifpa_text,
+                'details_source'  => $ifpa_text !== '' ? 'IFPA' : null,
                 'location'        => $re['location'],
                 'venue'           => $venue,
                 'venue_confirmed' => $venue_confirmed,
@@ -984,6 +987,7 @@ if (file_exists($cache_file)) {
   .details-wrap summary:hover { color: var(--accent); }
   .details-wrap summary .car { transition: transform 0.15s; font-size: 9px; }
   .details-wrap[open] summary .car { transform: rotate(90deg); }
+  .details-wrap summary .details-src { opacity: 0.7; }
 
   .details-body {
     margin-top: 8px; padding: 12px; background: var(--surface2); border: 1px solid var(--border);
@@ -1137,7 +1141,7 @@ if (file_exists($cache_file)) {
 
         <?php if (trim($e['description'])): ?>
         <details class="details-wrap">
-          <summary><span class="car">&#9656;</span> Full details</summary>
+          <summary><span class="car">&#9656;</span> Full details<?php if (!empty($e['details_source'])): ?><span class="details-src">&middot; from <?= esc($e['details_source']) ?></span><?php endif; ?></summary>
           <div class="details-body"><?= esc_linkify($e['description']) ?></div>
         </details>
         <?php endif; ?>
