@@ -1026,8 +1026,8 @@ if (file_exists($cache_file)) {
           <div class="title">Upcoming Events</div>
           <div class="subtitle">
             <?= $show_regional
-              ? 'Everything in the DFW League view plus other North Texas tournaments, deduped and sorted by date.'
-              : 'What, where, when — and a link to register. Full writeups live on the league site.' ?>
+              ? 'All IFPA events in North Texas'
+              : 'Official DFW Pinball League events' ?>
           </div>
         </div>
       </div>
@@ -1046,7 +1046,7 @@ if (file_exists($cache_file)) {
 
   <nav class="view-switch" aria-label="Event view">
     <div class="seg-wrap">
-      <a href="?"<?= !$show_regional ? ' aria-current="true"' : '' ?>>DFW League</a>
+      <a href="?"<?= !$show_regional ? ' aria-current="true"' : '' ?>>DFW Pinball League</a>
       <a href="?region=1"<?= $show_regional ? ' aria-current="true"' : '' ?>>North Texas Regional</a>
     </div>
   </nav>
