@@ -233,37 +233,64 @@ function extract_ifpa_id(array $urls): ?string {
     return null;
 }
 
-/** Fetch (with cache) one tournament's record from the IFPA API. Null on any failure. */
-function fetch_ifpa_tournament(string $id, string $api_key, array &$cache, int $ttl): ?array {
-    if (isset($cache[$id]) && (time() - $cache[$id]['timestamp']) <= $ttl) {
-        return $cache[$id]['data'];
-    }
-    $ch = curl_init("https://api.ifpapinball.com/tournament/{$id}?api_key={$api_key}");
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 6);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    $response  = curl_exec($ch);
-    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+/** Make sure the IFPA tournament cache holds a fresh record for each of $ids, fetching any missing
+ *  or stale ones in parallel batches — the regional view can need ~30, which one-by-one would add
+ *  several seconds to an uncached page load. A failed fetch leaves any stale copy in place (better
+ *  than nothing) and is simply retried next load. Returns true if the cache changed. Records are
+ *  read straight out of $cache afterwards: $cache[$id]['data'] ?? null. */
+function prefetch_ifpa_tournaments(array $ids, string $api_key, array &$cache, int $ttl): bool {
+    $todo = array_values(array_unique(array_filter($ids, fn($id) =>
+        $id && (!isset($cache[$id]) || (time() - $cache[$id]['timestamp']) > $ttl))));
+    $changed = false;
 
-    if ($response !== false && $http_code === 200) {
-        $data = json_decode($response, true);
-        if (is_array($data) && isset($data['tournament_id'])) {
-            $cache[$id] = ['timestamp' => time(), 'data' => $data];
-            return $data;
+    foreach (array_chunk($todo, 8) as $batch) {
+        $mh = curl_multi_init();
+        $handles = [];
+        foreach ($batch as $id) {
+            $ch = curl_init("https://api.ifpapinball.com/tournament/{$id}?api_key={$api_key}");
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_multi_add_handle($mh, $ch);
+            $handles[$id] = $ch;
         }
+        do {
+            $status = curl_multi_exec($mh, $running);
+            if ($running) curl_multi_select($mh, 1.0);
+        } while ($running && $status === CURLM_OK);
+
+        foreach ($handles as $id => $ch) {
+            $body = curl_multi_getcontent($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_multi_remove_handle($mh, $ch);
+            $data = ($code === 200 && $body) ? json_decode($body, true) : null;
+            if (is_array($data) && isset($data['tournament_id'])) {
+                $cache[$id] = ['timestamp' => time(), 'data' => $data];
+                $changed = true;
+            }
+        }
+        curl_multi_close($mh);
     }
-    // Fetch failed — fall back to a stale cached copy if we have one, rather than nothing.
-    return $cache[$id]['data'] ?? null;
+    return $changed;
 }
 
-/** IFPA addresses come back SHOUTING IN ALL CAPS — title-case them, but keep short
- *  tokens (state codes, directionals like "N"/"S") upper so "TX" doesn't become "Tx". */
+/** An IFPA record's freeform writeup, with line endings normalized for the text extractors. */
+function ifpa_details_text(?array $t): string {
+    return str_replace(["\r\n", "\r"], "\n", $t['details'] ?? '');
+}
+
+/** Some IFPA addresses come back SHOUTING IN ALL CAPS — title-case those, keeping short tokens
+ *  (state codes, directionals like "N"/"NW") upper so "TX" doesn't become "Tx", except common
+ *  street suffixes ("DR" → "Dr"). Addresses that are already mixed-case are left as written. */
 function title_case_address(string $s): string {
+    if ($s !== mb_strtoupper($s)) return $s;
+    $suffixes = ['DR', 'LN', 'ST', 'RD', 'CT', 'PL', 'WY'];
     $tokens = preg_split('/([\s,]+)/', $s, -1, PREG_SPLIT_DELIM_CAPTURE);
     foreach ($tokens as &$tok) {
         if (!preg_match('/^[A-Za-z]+$/', $tok)) continue;
-        $tok = mb_strlen($tok) <= 2 ? mb_strtoupper($tok) : mb_convert_case(mb_strtolower($tok), MB_CASE_TITLE, 'UTF-8');
+        $tok = (mb_strlen($tok) <= 2 && !in_array($tok, $suffixes, true))
+            ? $tok
+            : mb_convert_case(mb_strtolower($tok), MB_CASE_TITLE, 'UTF-8');
     }
     return implode('', $tokens);
 }
@@ -271,6 +298,7 @@ function title_case_address(string $s): string {
 /** Build a clean one-line address from an IFPA tournament record, if it has one. */
 function ifpa_venue_address(array $t): ?string {
     $raw = trim(str_replace(["\r\n", "\r", "\n"], ', ', $t['raw_address'] ?? ''));
+    $raw = preg_replace('/,\s*(?:United States|USA)(?=\s*(?:,|$))/i', '', $raw); // every event here is US
     $raw = trim($raw, ", ");
     if ($raw !== '') return title_case_address($raw);
 
@@ -302,12 +330,19 @@ function extract_schedule(string $text): array {
     $time = '(\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)|noon|midnight)';
     $doors = $start = null;
 
-    if (preg_match('/\bdoors?\s*open\w*[^.\n]{0,40}?' . $time . '/i', $text, $m)) {
-        $doors = normalize_time_token($m[1]);
+    foreach ([
+        '/\bdoors?\s*open\w*[^.\n]{0,40}?' . $time . '/i', // "Doors open 5PM", "Doors Open @ 10:00AM"
+        '/\bdoors\b[^.\n]{0,15}?' . $time . '/i',           // "Doors at 5PM" — plural only, so "door prizes" can't match
+    ] as $pattern) {
+        if (preg_match($pattern, $text, $m)) {
+            $doors = normalize_time_token($m[1]);
+            break;
+        }
     }
     foreach ([
         '/\bfirst\s*(?:flip|ball)(?:\s*attempt)?\b[^.\n]{0,40}?' . $time . '/i',
-        '/\btournament\s*(?:meeting\s*\/?\s*start|start)\b[^.\n]{0,40}?' . $time . '/i',
+        '/\btournament\s*(?:meeting\s*\/?\s*start|starts?)\b[^.\n]{0,40}?' . $time . '/i',
+        '/\bfirst\s+round\s+starts?\b[^.\n]{0,40}?' . $time . '/i',
         '/\bstart\s*time\b[^.\n]{0,40}?' . $time . '/i',
     ] as $pattern) {
         if (preg_match($pattern, $text, $m)) {
@@ -316,6 +351,43 @@ function extract_schedule(string $text): array {
         }
     }
     return ['doors' => $doors, 'start' => $start];
+}
+
+/** Entry cost from freeform event text, ready to display: "$15", "$ Free", or null when it isn't
+ *  stated. Only amounts tied to cost phrasing count ("Cost: $15", "$15 per adult", "$15 at the
+ *  door", "$15 entry fee"), so prize pools, payouts, hotel rates and door-prize values elsewhere in
+ *  the same writeup are never picked up. A multi-tournament weekend that states several prices
+ *  (free Thursday, $10 Friday, $45 main event) shows the full range — "$ Free–45" — rather than
+ *  whichever price happened to be mentioned first. */
+function extract_cost(string $text): ?string {
+    $lines   = explode("\n", str_replace(["\r\n", "\r"], "\n", $text));
+    $amount  = '\$\s?(\d{1,4}(?:\.\d{2})?)';
+    $paid    = [];
+    foreach ($lines as $i => $line) {
+        $line = trim($line);
+        // "Cost:" alone on a line, with the amount on the next one
+        if (preg_match('/\b(?:cost|price|fee)\s*:?\s*$/i', $line) && isset($lines[$i + 1])) {
+            $line .= ' ' . trim($lines[$i + 1]);
+        }
+        foreach ([
+            '/\b(?:cost|entry fee|price|admission|buy[- ]?in)\b[^$\n.]{0,15}' . $amount . '/i',
+            '/' . $amount . '\s*(?:cash\s+)?(?:per\s+(?:adult|person|player|entry)|entry(?:\s+fee)?|at\s+the\s+door|to\s+(?:play|enter)|buy[- ]?in)\b/i',
+        ] as $pattern) {
+            if (preg_match_all($pattern, $line, $m)) {
+                foreach ($m[1] as $v) $paid[] = (float) $v;
+            }
+        }
+    }
+    $free = (bool) preg_match('/\bfree\s+to\s+(?:enter|play)\b|\bfree\s+entry\b|\bno\s+entry\s+fee\b|\bcost\s*(?:is\s*)?:?\s*free\b/i', $text);
+
+    $fmt  = fn(float $v) => preg_replace('/\.00$/', '', number_format($v, 2, '.', ''));
+    $paid = array_values(array_unique($paid));
+    sort($paid);
+    if (!$paid) return $free ? '$ Free' : null;
+    $max = $fmt(end($paid));
+    if ($free)              return '$ Free–' . $max;
+    if (count($paid) === 1) return '$' . $max;
+    return '$' . $fmt($paid[0]) . '–' . $max;
 }
 
 // ── Regional sources (shown only via ?region=1) ─────────────────────────
@@ -495,16 +567,24 @@ foreach ($all_events as $e) {
 
 usort($upcoming, fn($a, $b) => $a['start'] <=> $b['start']);
 
-// Load the IFPA cache once; fetch_ifpa_tournament() fills in gaps below, then we save it back once.
+// Load the IFPA cache once; prefetch_ifpa_tournaments() fills in gaps (here and for the regional
+// view below), then it's saved back once at the end.
 $ifpa_cache = [];
 if (file_exists($ifpa_cache_file)) {
     $decoded = json_decode(file_get_contents($ifpa_cache_file), true);
     if (is_array($decoded)) $ifpa_cache = $decoded;
 }
-$ifpa_cache_dirty = false;
 
 foreach ($upcoming as &$e) {
-    $e['urls']        = extract_urls($e['description_raw']);
+    $e['urls'] = extract_urls($e['description_raw']);
+}
+unset($e);
+$ifpa_cache_dirty = prefetch_ifpa_tournaments(
+    array_map(fn($e) => extract_ifpa_id($e['urls']), $upcoming),
+    $ifpa_api_key, $ifpa_cache, $cache_ttl
+);
+
+foreach ($upcoming as &$e) {
     $e['source']       = 'dfw';
     $e['recurring']    = false;
     $e['not_league']   = (bool) preg_match($NOT_LEAGUE, $e['summary'] . ' ' . $e['description']);
@@ -517,34 +597,29 @@ foreach ($upcoming as &$e) {
     $e['venue'] = $e['location'];
     $e['venue_confirmed'] = false;
     $sched = extract_schedule($e['description']);
+    $cost  = extract_cost($e['description']);
 
-    $ifpa_id = extract_ifpa_id($e['urls']);
-    if ($ifpa_id) {
-        $tournament = fetch_ifpa_tournament($ifpa_id, $ifpa_api_key, $ifpa_cache, $cache_ttl);
-        $ifpa_cache_dirty = true; // harmless to re-save even on a pure cache hit
-
-        if ($tournament) {
-            $addr = ifpa_venue_address($tournament);
-            if ($addr) {
-                $e['venue']           = $addr;
-                $e['venue_confirmed'] = true;
-            }
-            if (!empty($tournament['details'])) {
-                $ifpa_text = str_replace(["\r\n", "\r"], "\n", $tournament['details']);
-                $ifpa_sched = extract_schedule($ifpa_text);
-                $sched['doors'] = $sched['doors'] ?? $ifpa_sched['doors'];
-                $sched['start'] = $sched['start'] ?? $ifpa_sched['start'];
-            }
+    $ifpa_id    = extract_ifpa_id($e['urls']);
+    $tournament = $ifpa_id ? ($ifpa_cache[$ifpa_id]['data'] ?? null) : null;
+    if ($tournament) {
+        $addr = ifpa_venue_address($tournament);
+        if ($addr) {
+            $e['venue']           = $addr;
+            $e['venue_confirmed'] = true;
+        }
+        $ifpa_text = ifpa_details_text($tournament);
+        if ($ifpa_text !== '') {
+            $ifpa_sched = extract_schedule($ifpa_text);
+            $sched['doors'] = $sched['doors'] ?? $ifpa_sched['doors'];
+            $sched['start'] = $sched['start'] ?? $ifpa_sched['start'];
+            $cost = $cost ?? extract_cost($ifpa_text);
         }
     }
     $e['sched'] = $sched;
+    $e['cost']  = $cost;
     $e['reg_sentence'] = reg_sentence($e['description']);
 }
 unset($e);
-
-if ($ifpa_cache_dirty) {
-    file_put_contents($ifpa_cache_file, json_encode($ifpa_cache));
-}
 
 // ── Fetch + merge the regional feed, only when the viewer asked for it ─────
 $show_regional   = isset($_GET['region']) && $_GET['region'] !== '' && $_GET['region'] !== '0';
@@ -657,19 +732,43 @@ if ($show_regional) {
             $counts[$key] = ($counts[$key] ?? 0) + 1;
         }
 
+        // The regional feeds carry no description text, but rows linked to an IFPA tournament can get
+        // doors/start times and cost from that tournament's writeup — fetched in one parallel pass.
+        // (Matchplay-only rows can't: its public API allows just 6 requests a minute, and its
+        // descriptions are mostly one-liners. Those rows already show an exact start in the date.)
+        $candidate_ifpa_ids = array_map('regional_ifpa_id', $candidates);
+        if (prefetch_ifpa_tournaments($candidate_ifpa_ids, $ifpa_api_key, $ifpa_cache, $cache_ttl)) {
+            $ifpa_cache_dirty = true;
+        }
+
         $regional_extra = [];
-        foreach ($candidates as $re) {
+        foreach ($candidates as $i => $re) {
             $key = recurrence_key($re['summary']);
             $is_numbered_session = (bool) preg_match('/#\d+\s*$/', $re['summary']);
             $is_recurring = !$is_numbered_session && $counts[$key] >= 3;
+
+            $tournament = $candidate_ifpa_ids[$i] ? ($ifpa_cache[$candidate_ifpa_ids[$i]]['data'] ?? null) : null;
+            $ifpa_text  = ifpa_details_text($tournament);
+
+            // The feed's location is sometimes just a city ("Arlington", "Pottsboro, TX"). When it
+            // has no street number, use the IFPA tournament's address if that's any more specific.
+            $venue = $re['location'];
+            $venue_confirmed = false;
+            if ($tournament && !preg_match('/\d/', $venue)) {
+                $addr = ifpa_venue_address($tournament);
+                if ($addr && preg_match('/\d/', $addr)) {
+                    $venue = $addr;
+                    $venue_confirmed = true;
+                }
+            }
 
             $regional_extra[] = [
                 'summary'         => $re['summary'],
                 'description'     => '',
                 'description_raw' => '',
                 'location'        => $re['location'],
-                'venue'           => $re['location'],
-                'venue_confirmed' => false,
+                'venue'           => $venue,
+                'venue_confirmed' => $venue_confirmed,
                 'start'           => $re['start'],
                 'end'             => $re['end'],
                 'allday'          => $re['allday'],
@@ -677,7 +776,8 @@ if ($show_regional) {
                 'not_league'      => false,
                 'tbd'             => false,
                 'reg_sentence'    => null,
-                'sched'           => ['doors' => null, 'start' => null],
+                'sched'           => $ifpa_text !== '' ? extract_schedule($ifpa_text) : ['doors' => null, 'start' => null],
+                'cost'            => $ifpa_text !== '' ? extract_cost($ifpa_text) : null,
                 'multiday'        => (bool) ($re['end'] && $re['end'] > $re['start']),
                 'source'          => 'regional',
                 'recurring'       => $is_recurring,
@@ -687,6 +787,10 @@ if ($show_regional) {
         $upcoming = array_merge($upcoming, $regional_extra);
         usort($upcoming, fn($a, $b) => $a['start'] <=> $b['start']);
     }
+}
+
+if ($ifpa_cache_dirty) {
+    file_put_contents($ifpa_cache_file, json_encode($ifpa_cache));
 }
 
 $last_updated = null;
@@ -1006,10 +1110,11 @@ if (file_exists($cache_file)) {
           <?php if ($e['venue_confirmed']): ?><span class="venue-confirmed">&#10003; confirmed via IFPA</span><?php endif; ?>
         </div>
         <?php endif; ?>
-        <?php if ($e['sched']['doors'] || $e['sched']['start']): ?>
+        <?php if ($e['sched']['doors'] || $e['sched']['start'] || $e['cost']): ?>
         <div class="evt-sched">
           <?php if ($e['sched']['doors']): ?><span class="sched-pill">&#128682; Doors <?= esc($e['sched']['doors']) ?></span><?php endif; ?>
           <?php if ($e['sched']['start']): ?><span class="sched-pill">&#127937; Start <?= esc($e['sched']['start']) ?></span><?php endif; ?>
+          <?php if ($e['cost']): ?><span class="sched-pill"><?= esc($e['cost']) ?></span><?php endif; ?>
         </div>
         <?php endif; ?>
 
