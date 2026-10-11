@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+cd "$(dirname "$0")"
+
 git pull
 
 rsync -av --no-group --no-owner --omit-dir-times --exclude='.git' --exclude='deploy.sh' --exclude='.backups' --exclude='tournament' \
